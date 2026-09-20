@@ -208,7 +208,7 @@ fi
 [ -x /usr/libexec/rpcd/leigod ] && chmod 0755 /usr/libexec/rpcd/leigod
 rm -f /tmp/luci-indexcache.* 2>/dev/null || true
 rm -rf /tmp/luci-modulecache/ 2>/dev/null || true
-/etc/init.d/rpcd reload 2>/dev/null || true
+/etc/init.d/rpcd restart 2>/dev/null || true
 exit 0
 """
 

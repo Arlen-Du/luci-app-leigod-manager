@@ -105,9 +105,7 @@ _start_monitor() {
 _is_installed() {
 	local arch
 	arch=$(get_arch)
-	[ -f "${SBIN_DIR}/${BINARY_PREFIX}.${arch}" ] || \
-	[ -f "/etc/init.d/acc" ] || \
-	[ -d "${SBIN_DIR}" ] || \
+	[ -x "${SBIN_DIR}/${BINARY_PREFIX}.${arch}" ] || \
 	[ -x "/usr/sbin/leigod-acc" ]
 }
 
@@ -218,21 +216,12 @@ _ensure_modules_loaded() {
 
 # TUN environment verification and automatic preparation
 _prepare_tun_env() {
-	local err=""
-
-	# 1. Load / ensure tun kernel module
-	if ! lsmod 2>/dev/null | grep -q "^tun "; then
-		modprobe tun >/dev/null 2>&1 || true
-	fi
-
-	# Attempt to install kmod-tun if not loaded and device missing
-	if ! lsmod 2>/dev/null | grep -q "^tun " && [ ! -c /dev/net/tun ]; then
-		if command -v apk >/dev/null 2>&1; then
-			apk add kmod-tun >/dev/null 2>&1 || true
-		elif command -v opkg >/dev/null 2>&1; then
-			opkg install kmod-tun >/dev/null 2>&1 || true
-		fi
-		modprobe tun >/dev/null 2>&1 || true
+	# 1. Install dependencies specified for tun mode:
+	# libpcap1 kmod-tun kmod-ipt-nat kmod-ipt-ipset ipset curl
+	if command -v opkg >/dev/null 2>&1; then
+		opkg install libpcap1 kmod-tun kmod-ipt-nat kmod-ipt-ipset ipset curl ip-full >/dev/null 2>&1 || true
+	elif command -v apk >/dev/null 2>&1; then
+		apk add libpcap1 kmod-tun kmod-ipt-nat kmod-ipt-ipset ipset curl ip-full >/dev/null 2>&1 || true
 	fi
 
 	# 2. Ensure /dev/net/tun exists with proper permissions
@@ -242,36 +231,8 @@ _prepare_tun_env() {
 		chmod 0666 /dev/net/tun 2>/dev/null || true
 	fi
 
-	if [ ! -c /dev/net/tun ]; then
-		echo "缺少 /dev/net/tun 设备，请安装 kmod-tun 内核模块 (apk add kmod-tun / opkg install kmod-tun)"
-		return 1
-	fi
-
-	# 3. Check ip tuntap support (BusyBox default ip lacks tuntap, requires ip-full)
-	if ! ip tuntap >/dev/null 2>&1; then
-		if command -v apk >/dev/null 2>&1; then
-			apk add ip-full >/dev/null 2>&1 || true
-		elif command -v opkg >/dev/null 2>&1; then
-			opkg install ip-full >/dev/null 2>&1 || true
-		fi
-	fi
-
-	if ! ip tuntap >/dev/null 2>&1; then
-		echo "系统 ip 命令不支持 tuntap，请安装 ip-full 软件包 (apk add ip-full / opkg install ip-full)"
-		return 1
-	fi
-
-	# 4. Load all required kernel modules for TUN mode
+	# 3. Load all required kernel modules for TUN mode
 	_ensure_modules_loaded "tun"
-
-	# Check ipset command and support
-	if ! command -v ipset >/dev/null 2>&1; then
-		if command -v apk >/dev/null 2>&1; then
-			apk add ipset kmod-ipt-ipset >/dev/null 2>&1 || true
-		elif command -v opkg >/dev/null 2>&1; then
-			opkg install ipset kmod-ipt-ipset >/dev/null 2>&1 || true
-		fi
-	fi
 
 	return 0
 }
@@ -309,7 +270,6 @@ _ensure_init_script() {
 		chmod 0755 "/etc/init.d/acc" 2>/dev/null || true
 		# Repair any previous corrupted substitutions (--mode tun -> ${args})
 		sed -i 's|--mode tun|\${args}|g' /etc/init.d/acc 2>/dev/null || true
-		sed -i 's/\[ "\${mode}" = "tun" \] && args=/\[ "\${mode}" = "tproxy" \] && args=/g' /etc/init.d/acc 2>/dev/null || true
 		echo "/etc/init.d/acc"
 	elif [ -f "/etc/init.d/leigod" ]; then
 		chmod 0755 "/etc/init.d/leigod" 2>/dev/null || true
@@ -423,9 +383,14 @@ EOF
 	uci set leigod-manager.base.mode="$mode"
 	uci commit leigod-manager 2>/dev/null || true
 
-	# 4. Ensure legacy procd acc init is disabled
-	if [ -f "/etc/init.d/acc" ]; then
-		/etc/init.d/acc disable >/dev/null 2>&1 || true
+	# 4. Update init scripts according to mode (step 2)
+	_ensure_init_script >/dev/null 2>&1
+	if [ "$mode" = "tun" ]; then
+		[ -f /etc/init.d/acc ] && sed -i '/10.20.30.40/ s/tproxy/tun/' /etc/init.d/acc 2>/dev/null || true
+		[ -f "${SBIN_DIR}/monitor.sh" ] && sed -i '/10.20.30.40/ s/tproxy/tun/' "${SBIN_DIR}/monitor.sh" 2>/dev/null || true
+	else
+		[ -f /etc/init.d/acc ] && sed -i '/10.20.30.40/ s/tun/tproxy/' /etc/init.d/acc 2>/dev/null || true
+		[ -f "${SBIN_DIR}/monitor.sh" ] && sed -i '/10.20.30.40/ s/tun/tproxy/' "${SBIN_DIR}/monitor.sh" 2>/dev/null || true
 	fi
 
 	# 5. Load modules and verify device
@@ -497,20 +462,24 @@ do_start() {
 	mode=$(_get_mode)
 
 	if [ "$mode" = "tun" ]; then
-		local prep_err
-		prep_err=$(_prepare_tun_env)
-		if [ $? -ne 0 ]; then
-			printf '{"code":1,"message":"%s"}\n' "$prep_err"
-			return
-		fi
+		_prepare_tun_env >/dev/null 2>&1
 	else
 		_ensure_modules_loaded "$mode"
 	fi
 
-	# Always ensure acc_firewall.ini has correct backend and mode before starting
+	# Always ensure acc_firewall.ini and init scripts have correct mode before starting
 	_apply_mode "$mode"
 
-	# Start official monitor.sh to supervise accelerator and pull up daemon
+	# Start acceleration service
+	if [ -f /etc/init.d/acc ]; then
+		chmod 0755 /etc/init.d/acc 2>/dev/null || true
+		/etc/init.d/acc enable 2>/dev/null || true
+		/etc/init.d/acc start >/dev/null 2>&1 || true
+	elif [ -f /etc/init.d/leigod-acc ]; then
+		/etc/init.d/leigod-acc start >/dev/null 2>&1 || true
+	fi
+
+	# Ensure monitor.sh is also supervising
 	_start_monitor
 
 	# Fast-poll up to 6 seconds (checking every 500ms) until daemon is confirmed running
@@ -532,18 +501,17 @@ do_start() {
 }
 
 do_stop() {
-	# 1. Stop monitor supervisor first so it does not resurrect killed processes
+	# 1. Stop /etc/init.d/acc
+	[ -f "/etc/init.d/acc" ] && /etc/init.d/acc stop >/dev/null 2>&1 || true
+
+	# 2. Stop monitor supervisor first so it does not resurrect killed processes
 	_stop_monitor
 
-	# 2. Disable legacy procd service if present
-	if [ -f "/etc/init.d/acc" ]; then
-		/etc/init.d/acc stop >/dev/null 2>&1 || true
-		/etc/init.d/acc disable >/dev/null 2>&1 || true
-	fi
-
-	# 3. Clean rules, gracefully kill processes (SIGUSR1 then SIGKILL), clean rules again
-	_clean_rules
+	# 3. Kill acc processes
 	_kill_acc
+	ps 2>/dev/null | grep acc | grep -v grep | awk '{print $1}' | xargs -r kill -9 2>/dev/null || true
+
+	# 4. Clean rules
 	_clean_rules
 
 	sleep 1
@@ -570,29 +538,32 @@ do_set_mode() {
 
 	case "$mode" in
 		tun|tproxy)
-			if [ "$mode" = "tun" ]; then
-				local prep_err
-				prep_err=$(_prepare_tun_env)
-				if [ $? -ne 0 ]; then
-					printf '{"code":1,"message":"%s"}\n' "$prep_err"
-					return
-				fi
-			fi
-
-			# 1. Stop monitor supervisor
+			# 1. 关闭雷神加速服务
+			[ -f /etc/init.d/acc ] && /etc/init.d/acc stop >/dev/null 2>&1 || true
 			_stop_monitor
-
-			# 2. Kill current daemon and clean old mode rules
 			_kill_acc
+			ps 2>/dev/null | grep acc | grep -v grep | awk '{print $1}' | xargs -r kill -9 2>/dev/null || true
 			_clean_rules
 
-			# 3. Apply new mode to acc_firewall.ini and UCI
+			# 2. 执行命令把启动脚本与配置模式修改
 			_apply_mode "$mode"
 
-			# 4. Start official monitor with the new mode
+			# 3. 安装依赖包（tun 模式）
+			if [ "$mode" = "tun" ]; then
+				_prepare_tun_env >/dev/null 2>&1
+			fi
+
+			# 4. 启动雷神加速服务
+			if [ -f /etc/init.d/acc ]; then
+				chmod 0755 /etc/init.d/acc 2>/dev/null || true
+				/etc/init.d/acc enable 2>/dev/null || true
+				/etc/init.d/acc start >/dev/null 2>&1 || true
+			elif [ -f /etc/init.d/leigod-acc ]; then
+				/etc/init.d/leigod-acc start >/dev/null 2>&1 || true
+			fi
 			_start_monitor
 
-			# 5. Fast-poll until daemon is confirmed running
+			# 5. 查看进程起来没
 			local waited=0
 			while [ "$waited" -lt 12 ]; do
 				_is_running && break
@@ -647,24 +618,47 @@ do_get_logs() {
 
 do_install() {
 	local result code
-	if [ -x "${SBIN_DIR}/acc-gw.router.$(get_arch)" ]; then
-		# Already installed, repair init script and config
-		_ensure_init_script >/dev/null 2>&1
-		_apply_mode "$(_get_mode)"
-		printf '{"code":0,"message":"leigod already installed in /usr/sbin/leigod"}\n'
-		return
+
+	# Ensure curl is available for official installer
+	if ! command -v curl >/dev/null 2>&1; then
+		if command -v opkg >/dev/null 2>&1; then
+			opkg update >/dev/null 2>&1 || true
+			opkg install curl >/dev/null 2>&1 || true
+		elif command -v apk >/dev/null 2>&1; then
+			apk add curl >/dev/null 2>&1 || true
+		fi
 	fi
 
-	# Run official install script
-	result=$(cd /tmp && sh -c "$(curl -fsSL http://119.3.40.126/router_plugin_new/plugin_install.sh)" 2>&1)
+	# Run official install command: cd /tmp && sh -c "$(curl -fsSL http://119.3.40.126/router_plugin_new/plugin_install.sh)"
+	result=$(cd /tmp && sh -c "$(curl -fsSL http://119.3.40.126/router_plugin_new/plugin_install.sh 2>/dev/null || wget -qO- http://119.3.40.126/router_plugin_new/plugin_install.sh)" 2>&1)
 	code=$?
-	result=$(echo "$result" | tail -n 15 | sed 's/\\/\\\\/g; s/"/\\"/g; s/$/\\n/g' | tr -d '\n')
+
+	# Post-installation initialization
+	if [ -x "${SBIN_DIR}/acc-gw.router.$(get_arch)" ]; then
+		code=0
+		_ensure_init_script >/dev/null 2>&1
+		_apply_mode "$(_get_mode)"
+		if [ -f /etc/init.d/acc ]; then
+			chmod 0755 /etc/init.d/acc 2>/dev/null || true
+			/etc/init.d/acc enable 2>/dev/null || true
+			/etc/init.d/acc start >/dev/null 2>&1 || true
+		fi
+		_start_monitor
+	fi
+
+	result=$(echo "$result" | tail -n 25 | sed 's/\\/\\\\/g; s/"/\\"/g; s/$/\\n/g' | tr -d '\n')
+	[ -z "$result" ] && result="安装完成"
 	printf '{"code":%d,"message":"%s"}\n' "$code" "$result"
 }
 
 do_uninstall() {
 	local result code
-	if [ -x "${SBIN_DIR}/leigod_uninstall.sh" ]; then
+	_stop_monitor
+	[ -f /etc/init.d/acc ] && /etc/init.d/acc stop >/dev/null 2>&1 || true
+
+	# Run official uninstall command: sh /usr/sbin/leigod/leigod_uninstall.sh
+	if [ -f "${SBIN_DIR}/leigod_uninstall.sh" ]; then
+		chmod 0755 "${SBIN_DIR}/leigod_uninstall.sh" 2>/dev/null || true
 		result=$(sh "${SBIN_DIR}/leigod_uninstall.sh" 2>&1)
 		code=$?
 	else
@@ -675,9 +669,22 @@ do_uninstall() {
 		rm -f /etc/config/accelerator.ini "$FIREWALL_INI" "$VERSION_INI" \
 		      /etc/config/acc_core_conf.json /etc/config/ipdatacloud_country.xdb
 		code=0
-		result="uninstalled"
+		result="雷神加速器已成功卸载"
 	fi
-	result=$(echo "$result" | sed 's/\\/\\\\/g; s/"/\\"/g; s/$/\\n/g' | tr -d '\n')
+
+	# Fallback cleanup to ensure no lingering processes or rules
+	_stop_monitor
+	_kill_acc
+	ps 2>/dev/null | grep acc | grep -v grep | awk '{print $1}' | xargs -r kill -9 2>/dev/null || true
+	_clean_rules
+
+	# Verify binary was removed
+	if ! _is_installed; then
+		code=0
+	fi
+
+	result=$(echo "$result" | tail -n 25 | sed 's/\\/\\\\/g; s/"/\\"/g; s/$/\\n/g' | tr -d '\n')
+	[ -z "$result" ] && result="卸载完成"
 	printf '{"code":%d,"message":"%s"}\n' "$code" "$result"
 }
 
@@ -741,24 +748,227 @@ do_set_config() {
 	fi
 }
 
+do_get_deps() {
+	local installed_pkgs=""
+	local sf
+	for sf in /usr/lib/opkg/status /lib/opkg/status /var/lib/opkg/status; do
+		if [ -f "$sf" ]; then
+			installed_pkgs=$(awk '/^Package: /{pkg=$2} /^Status: / && /installed/{print pkg}' "$sf" 2>/dev/null)
+			[ -n "$installed_pkgs" ] && break
+		fi
+	done
+	if [ -z "$installed_pkgs" ] && command -v opkg >/dev/null 2>&1; then
+		installed_pkgs=$(opkg list-installed 2>/dev/null | awk '{print $1}')
+	fi
+	if [ -z "$installed_pkgs" ] && command -v apk >/dev/null 2>&1; then
+		installed_pkgs=$(apk info 2>/dev/null)
+	fi
+
+	_is_installed_pkg() {
+		local p="$1"
+		case "$p" in
+			libpcap1|libpcap)
+				echo "$installed_pkgs" | grep -qE "^(libpcap1|libpcap)$" 2>/dev/null && return 0
+				[ -f /usr/lib/opkg/info/libpcap1.control ] || [ -f /usr/lib/opkg/info/libpcap.control ] && return 0
+				[ -f /lib/opkg/info/libpcap1.control ] || [ -f /var/lib/opkg/info/libpcap1.control ] && return 0
+				ls -d /usr/lib/libpcap* /lib/libpcap* /usr/lib64/libpcap* /lib64/libpcap* 2>/dev/null | grep -q . && return 0
+				[ -e /usr/lib/libpcap.so ] || [ -e /usr/lib/libpcap.so.1 ] || [ -e /lib/libpcap.so ] || [ -e /lib/libpcap.so.1 ] && return 0
+				command -v apk >/dev/null 2>&1 && apk info -e libpcap1 libpcap >/dev/null 2>&1 && return 0
+				;;
+			iptables)
+				command -v iptables >/dev/null 2>&1 && return 0
+				[ -x /usr/sbin/iptables ] || [ -x /sbin/iptables ] || [ -x /usr/bin/iptables ] && return 0
+				iptables -V >/dev/null 2>&1 && return 0
+				echo "$installed_pkgs" | grep -qE "^(iptables|iptables-nft|iptables-legacy|xtables-nft)$" 2>/dev/null && return 0
+				[ -f /usr/lib/opkg/info/iptables.control ] || [ -f /usr/lib/opkg/info/iptables-nft.control ] || [ -f /usr/lib/opkg/info/xtables-nft.control ] && return 0
+				command -v apk >/dev/null 2>&1 && apk info -e iptables iptables-nft iptables-legacy >/dev/null 2>&1 && return 0
+				;;
+			kmod-tun)
+				[ -e /dev/net/tun ] || [ -d /sys/class/misc/tun ] && return 0
+				lsmod 2>/dev/null | grep -q "^tun " && return 0
+				echo "$installed_pkgs" | grep -qx "kmod-tun" 2>/dev/null && return 0
+				[ -f /usr/lib/opkg/info/kmod-tun.control ] || [ -f /lib/opkg/info/kmod-tun.control ] && return 0
+				;;
+			ipset)
+				command -v ipset >/dev/null 2>&1 && return 0
+				[ -x /usr/sbin/ipset ] || [ -x /sbin/ipset ] || [ -x /usr/bin/ipset ] && return 0
+				echo "$installed_pkgs" | grep -qx "ipset" 2>/dev/null && return 0
+				[ -f /usr/lib/opkg/info/ipset.control ] && return 0
+				;;
+			curl)
+				command -v curl >/dev/null 2>&1 && return 0
+				[ -x /usr/bin/curl ] || [ -x /bin/curl ] && return 0
+				echo "$installed_pkgs" | grep -qx "curl" 2>/dev/null && return 0
+				[ -f /usr/lib/opkg/info/curl.control ] && return 0
+				;;
+			kmod-ipt-nat)
+				lsmod 2>/dev/null | grep -qE "^(iptable_nat|nf_nat) " && return 0
+				echo "$installed_pkgs" | grep -qE "^(kmod-ipt-nat|kmod-nft-nat)$" 2>/dev/null && return 0
+				[ -f /usr/lib/opkg/info/kmod-ipt-nat.control ] || [ -f /usr/lib/opkg/info/kmod-nft-nat.control ] && return 0
+				;;
+			kmod-ipt-ipset)
+				lsmod 2>/dev/null | grep -qE "^(xt_set|ip_set) " && return 0
+				echo "$installed_pkgs" | grep -qE "^(kmod-ipt-ipset|kmod-nft-ipset)$" 2>/dev/null && return 0
+				[ -f /usr/lib/opkg/info/kmod-ipt-ipset.control ] || [ -f /usr/lib/opkg/info/kmod-nft-ipset.control ] && return 0
+				;;
+			kmod-ipt-tproxy)
+				lsmod 2>/dev/null | grep -qE "^(xt_TPROXY|nf_tproxy) " && return 0
+				echo "$installed_pkgs" | grep -qE "^(kmod-ipt-tproxy|kmod-nft-tproxy)$" 2>/dev/null && return 0
+				[ -f /usr/lib/opkg/info/kmod-ipt-tproxy.control ] || [ -f /usr/lib/opkg/info/kmod-nft-tproxy.control ] && return 0
+				;;
+			iptables-mod-tproxy)
+				ls -d /usr/lib/iptables/libxt_TPROXY.so /usr/lib/xtables/libxt_TPROXY.so 2>/dev/null | grep -q . && return 0
+				echo "$installed_pkgs" | grep -qE "^(iptables-mod-tproxy|iptables-nft)$" 2>/dev/null && return 0
+				[ -f /usr/lib/opkg/info/iptables-mod-tproxy.control ] && return 0
+				;;
+			*)
+				echo "$installed_pkgs" | grep -qx "$p" 2>/dev/null && return 0
+				[ -f "/usr/lib/opkg/info/${p}.control" ] || [ -f "/lib/opkg/info/${p}.control" ] && return 0
+				command -v "$p" >/dev/null 2>&1 && return 0
+				;;
+		esac
+		return 1
+	}
+
+	local tun_json="" tproxy_json="" p status
+	for p in libpcap1 iptables kmod-tun kmod-ipt-nat kmod-ipt-ipset ipset curl; do
+		if _is_installed_pkg "$p"; then status="true"; else status="false"; fi
+		[ -n "$tun_json" ] && tun_json="${tun_json},"
+		tun_json="${tun_json}{\"name\":\"$p\",\"installed\":$status}"
+	done
+
+	for p in libpcap1 iptables iptables-mod-tproxy kmod-ipt-tproxy kmod-ipt-nat kmod-ipt-ipset ipset curl; do
+		if _is_installed_pkg "$p"; then status="true"; else status="false"; fi
+		[ -n "$tproxy_json" ] && tproxy_json="${tproxy_json},"
+		tproxy_json="${tproxy_json}{\"name\":\"$p\",\"installed\":$status}"
+	done
+
+	printf '{"tun":[%s],"tproxy":[%s]}\n' "$tun_json" "$tproxy_json"
+}
+
+do_manage_deps() {
+	local input mode action pkg
+	input=$(cat)
+	mode=$(echo "$input" | jsonfilter -e '@.mode' 2>/dev/null)
+	[ -z "$mode" ] && mode=$(echo "$input" | grep -o '"mode"[[:space:]]*:[[:space:]]*"[^"]*"' | cut -d'"' -f4)
+
+	action=$(echo "$input" | jsonfilter -e '@.action' 2>/dev/null)
+	[ -z "$action" ] && action=$(echo "$input" | grep -o '"action"[[:space:]]*:[[:space:]]*"[^"]*"' | cut -d'"' -f4)
+
+	pkg=$(echo "$input" | jsonfilter -e '@.pkg' 2>/dev/null)
+	[ -z "$pkg" ] && pkg=$(echo "$input" | grep -o '"pkg"[[:space:]]*:[[:space:]]*"[^"]*"' | cut -d'"' -f4)
+
+	[ -z "$action" ] && action="install"
+
+	# Map legacy libpcap name to libpcap1
+	[ "$pkg" = "libpcap" ] && pkg="libpcap1"
+
+	local target_pkgs=""
+	if [ -n "$pkg" ]; then
+		target_pkgs="$pkg"
+	elif [ "$mode" = "tun" ]; then
+		target_pkgs="libpcap1 iptables kmod-tun kmod-ipt-nat kmod-ipt-ipset ipset curl"
+	elif [ "$mode" = "tproxy" ]; then
+		target_pkgs="libpcap1 iptables iptables-mod-tproxy kmod-ipt-tproxy kmod-ipt-nat kmod-ipt-ipset ipset curl"
+	fi
+
+	if [ -z "$target_pkgs" ]; then
+		printf '{"code":1,"message":"未指定依赖包或模式"}\n'
+		return
+	fi
+
+	local log_file="/tmp/leigod_deps.log"
+	> "$log_file"
+	local code=0
+
+	if command -v opkg >/dev/null 2>&1; then
+		_run_opkg() {
+			local act="$1" p="$2"
+			case "$p" in
+				libpcap|libpcap1)
+					if [ "$act" = "install" ]; then
+						opkg install libpcap1 >> "$log_file" 2>&1 || opkg install libpcap >> "$log_file" 2>&1
+					elif [ "$act" = "reinstall" ]; then
+						opkg install --force-reinstall libpcap1 >> "$log_file" 2>&1 || opkg install --force-reinstall libpcap >> "$log_file" 2>&1
+					else
+						opkg remove libpcap1 >> "$log_file" 2>&1 || opkg remove libpcap >> "$log_file" 2>&1
+					fi
+					;;
+				iptables)
+					if [ "$act" = "install" ]; then
+						opkg install iptables-nft >> "$log_file" 2>&1 || opkg install iptables >> "$log_file" 2>&1
+					elif [ "$act" = "reinstall" ]; then
+						opkg install --force-reinstall iptables-nft >> "$log_file" 2>&1 || opkg install --force-reinstall iptables >> "$log_file" 2>&1
+					else
+						opkg remove iptables-nft >> "$log_file" 2>&1 || opkg remove iptables >> "$log_file" 2>&1
+					fi
+					;;
+				*)
+					if [ "$act" = "install" ]; then
+						opkg install "$p" >> "$log_file" 2>&1
+					elif [ "$act" = "reinstall" ]; then
+						opkg install --force-reinstall "$p" >> "$log_file" 2>&1
+					else
+						opkg remove "$p" >> "$log_file" 2>&1
+					fi
+					;;
+			esac
+		}
+
+		for one_pkg in $target_pkgs; do
+			_run_opkg "$action" "$one_pkg"
+			[ $? -ne 0 ] && code=1
+		done
+	elif command -v apk >/dev/null 2>&1; then
+		case "$action" in
+			install)
+				apk add $target_pkgs >> "$log_file" 2>&1
+				code=$?
+				;;
+			reinstall)
+				apk fix $target_pkgs >> "$log_file" 2>&1 || apk add --upgrade $target_pkgs >> "$log_file" 2>&1
+				code=$?
+				;;
+			remove|uninstall)
+				apk del $target_pkgs >> "$log_file" 2>&1
+				code=$?
+				;;
+			*)
+				printf '{"code":1,"message":"不支持的操作: %s"}\n' "$action"
+				return
+				;;
+		esac
+	else
+		printf '{"code":1,"message":"系统未找到 opkg 或 apk 包管理器"}\n'
+		return
+	fi
+
+	local result
+	result=$(tail -n 30 "$log_file" 2>/dev/null | awk '{gsub(/\\/, "\\\\"); gsub(/"/, "\\\""); printf "%s\\n", $0}')
+	[ -z "$result" ] && result="操作完成 (Exit code: ${code})"
+	printf '{"code":%d,"message":"%s"}\n' "$code" "$result"
+}
+
 # ---- dispatch ---------------------------------------------------------------
 
 case "$1" in
 	list)
-		printf '{"get_status":{},"start":{},"stop":{},"restart":{},"set_mode":{"mode":"String"},"get_logs":{"lines":"Number"},"install":{},"uninstall":{},"get_config":{},"set_config":{"enabled":"Boolean","mode":"String","log_level":"String"}}\n'
+		printf '{"get_status":{},"start":{},"stop":{},"restart":{},"set_mode":{"mode":"String"},"get_logs":{"lines":"Number"},"install":{},"uninstall":{},"get_config":{},"set_config":{"enabled":"Boolean","mode":"String","log_level":"String"},"get_deps":{},"manage_deps":{}}\n'
 		;;
 	call)
 		case "$2" in
-			get_status) do_get_status ;;
-			start)      do_start ;;
-			stop)       do_stop ;;
-			restart)    do_restart ;;
-			set_mode)   do_set_mode ;;
-			get_logs)   do_get_logs ;;
-			install)    do_install ;;
-			uninstall)  do_uninstall ;;
-			get_config) do_get_config ;;
-			set_config) do_set_config ;;
+			get_status)  do_get_status ;;
+			start)       do_start ;;
+			stop)        do_stop ;;
+			restart)     do_restart ;;
+			set_mode)    do_set_mode ;;
+			get_logs)    do_get_logs ;;
+			install)     do_install ;;
+			uninstall)   do_uninstall ;;
+			get_config)  do_get_config ;;
+			set_config)  do_set_config ;;
+			get_deps)    do_get_deps ;;
+			manage_deps) do_manage_deps ;;
 			*)
 				printf '{"code":1,"message":"unknown method: %s"}\n' "$2"
 				exit 1

@@ -1,7 +1,6 @@
 #!/bin/sh /etc/rc.common
 # SPDX-License-Identifier: GPL-2.0-only
 # Init script for Leigod Accelerator (leigod-acc)
-# Reuses official /usr/sbin/leigod/monitor.sh to manage daemon lifecycle
 
 START=99
 STOP=10
@@ -51,17 +50,22 @@ start() {
 
 	[ "$enabled" = "0" ] && return 0
 
-	# Ensure /dev/net/tun exists and modules are loaded in tun mode
+	# 1. Prepare mode in /etc/init.d/acc and monitor.sh
 	if [ "$mode" = "tun" ]; then
-		for m in tun xt_set ip_set ip_set_hash_net ip_set_list_set iptable_mangle iptable_nat iptable_filter xt_mark; do
-			modprobe "$m" 2>/dev/null || true
-		done
+		[ -f /etc/init.d/acc ] && sed -i '/10.20.30.40/ s/tproxy/tun/' /etc/init.d/acc 2>/dev/null || true
+		[ -f "${SBIN_DIR}/monitor.sh" ] && sed -i '/10.20.30.40/ s/tproxy/tun/' "${SBIN_DIR}/monitor.sh" 2>/dev/null || true
 		[ -d /dev/net ] || mkdir -p /dev/net 2>/dev/null
 		[ -c /dev/net/tun ] || mknod /dev/net/tun c 10 200 2>/dev/null || true
 		chmod 0666 /dev/net/tun 2>/dev/null || true
+		for m in tun xt_set ip_set ip_set_hash_net ip_set_list_set iptable_mangle iptable_nat iptable_filter xt_mark; do
+			modprobe "$m" 2>/dev/null || true
+		done
+	else
+		[ -f /etc/init.d/acc ] && sed -i '/10.20.30.40/ s/tun/tproxy/' /etc/init.d/acc 2>/dev/null || true
+		[ -f "${SBIN_DIR}/monitor.sh" ] && sed -i '/10.20.30.40/ s/tun/tproxy/' "${SBIN_DIR}/monitor.sh" 2>/dev/null || true
 	fi
 
-	# Ensure /etc/config/acc_firewall.ini has mode, backend, and tproxy_ip
+	# 2. Ensure /etc/config/acc_firewall.ini has mode, backend, and tproxy_ip
 	mkdir -p "$(dirname "$FIREWALL_INI")"
 	if [ -f "$FIREWALL_INI" ]; then
 		grep -q "^mode=" "$FIREWALL_INI" && sed -i "s/^mode=.*/mode=${mode}/" "$FIREWALL_INI" || echo "mode=${mode}" >> "$FIREWALL_INI"
@@ -76,16 +80,16 @@ tproxy_ip=10.20.30.40
 EOF
 	fi
 
-	# Disable legacy procd acc init if present to avoid dual-supervision conflict
-	if [ -f "/etc/init.d/acc" ]; then
-		/etc/init.d/acc stop >/dev/null 2>&1 || true
-		/etc/init.d/acc disable >/dev/null 2>&1 || true
+	# 3. Start service via /etc/init.d/acc if available
+	if [ -f /etc/init.d/acc ]; then
+		chmod 0755 /etc/init.d/acc 2>/dev/null || true
+		/etc/init.d/acc enable 2>/dev/null || true
+		/etc/init.d/acc start >/dev/null 2>&1 || true
 	fi
 
-	# Start official monitor.sh to supervise accelerator
+	# 4. Start official monitor.sh to supervise accelerator
 	if [ -f "$MONITOR_SCRIPT" ]; then
 		chmod 0755 "$MONITOR_SCRIPT" 2>/dev/null || true
-		# Kill any old monitor process and remove lock
 		for p in $(_find_pids_by_cmdline "monitor.sh"); do
 			kill -9 "$p" 2>/dev/null || true
 		done
@@ -99,25 +103,23 @@ EOF
 }
 
 stop() {
-	# Stop monitor supervisor
+	# 1. Stop /etc/init.d/acc
+	[ -f /etc/init.d/acc ] && /etc/init.d/acc stop >/dev/null 2>&1 || true
+
+	# 2. Stop monitor supervisor
 	for p in $(_find_pids_by_cmdline "monitor.sh"); do
 		kill -9 "$p" 2>/dev/null || true
 	done
 	rm -f "$MONITOR_LOCK" 2>/dev/null || true
 
-	# Kill acc-gw and upgrade monitor
+	# 3. Kill acc-gw and upgrade monitor
 	for p in $(_find_pids_by_cmdline "acc-gw.router") $(_find_pids_by_cmdline "acc_upgrade_monitor"); do
 		kill -9 "$p" 2>/dev/null || true
 	done
+	ps 2>/dev/null | grep acc | grep -v grep | awk '{print $1}' | xargs -r kill -9 2>/dev/null || true
 
-	# Clean firewall rules and tun devices
+	# 4. Clean firewall rules and tun devices
 	_clean_rules
-
-	# Stop legacy acc init if present
-	if [ -f "/etc/init.d/acc" ]; then
-		/etc/init.d/acc stop >/dev/null 2>&1 || true
-		/etc/init.d/acc disable >/dev/null 2>&1 || true
-	fi
 }
 
 restart() {

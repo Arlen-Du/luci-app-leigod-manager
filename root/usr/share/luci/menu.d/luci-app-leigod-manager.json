@@ -15,6 +15,9 @@
     "action": {
       "type": "view",
       "path": "leigod/overview"
+    },
+    "depends": {
+      "acl": ["luci-app-leigod-manager"]
     }
   },
   "admin/services/leigod/settings": {
@@ -23,6 +26,9 @@
     "action": {
       "type": "view",
       "path": "leigod/settings"
+    },
+    "depends": {
+      "acl": ["luci-app-leigod-manager"]
     }
   },
   "admin/services/leigod/install": {
@@ -31,6 +37,9 @@
     "action": {
       "type": "view",
       "path": "leigod/install"
+    },
+    "depends": {
+      "acl": ["luci-app-leigod-manager"]
     }
   },
   "admin/services/leigod/logs": {
@@ -39,6 +48,9 @@
     "action": {
       "type": "view",
       "path": "leigod/logs"
+    },
+    "depends": {
+      "acl": ["luci-app-leigod-manager"]
     }
   }
 }

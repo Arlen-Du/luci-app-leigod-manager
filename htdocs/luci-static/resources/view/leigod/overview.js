@@ -197,7 +197,7 @@ return view.extend({
 		var btnStart = E('button', {
 			'class': 'lg-btn lg-btn-green',
 			'id': 'lg-btn-start',
-			'disabled': status.running,
+			'disabled': status.running ? '' : null,
 			'click': function () {
 				this.disabled = true;
 				this.textContent = _('启动中...');
@@ -219,7 +219,7 @@ return view.extend({
 		var btnStop = E('button', {
 			'class': 'lg-btn lg-btn-red',
 			'id': 'lg-btn-stop',
-			'disabled': !status.running,
+			'disabled': !status.running ? '' : null,
 			'click': function () {
 				this.disabled = true;
 				this.textContent = _('停止中...');
@@ -241,7 +241,7 @@ return view.extend({
 		var btnRestart = E('button', {
 			'class': 'lg-btn lg-btn-blue',
 			'id': 'lg-btn-restart',
-			'disabled': !status.running,
+			'disabled': !status.running ? '' : null,
 			'click': function () {
 				this.disabled = true;
 				this.textContent = _('重启中...');

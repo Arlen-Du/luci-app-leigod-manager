@@ -3,20 +3,40 @@
     "description": "Grant access for LuCI Leigod Accelerator Manager",
     "read": {
       "ubus": {
-        "leigod": ["get_status", "get_logs", "get_config"]
+        "leigod": [
+          "*",
+          "get_status",
+          "start",
+          "stop",
+          "restart",
+          "set_mode",
+          "get_logs",
+          "install",
+          "uninstall",
+          "get_config",
+          "set_config",
+          "get_deps",
+          "manage_deps"
+        ]
       },
       "uci": ["leigod-manager"]
     },
     "write": {
       "ubus": {
         "leigod": [
+          "*",
+          "get_status",
           "start",
           "stop",
           "restart",
           "set_mode",
+          "get_logs",
           "install",
           "uninstall",
-          "set_config"
+          "get_config",
+          "set_config",
+          "get_deps",
+          "manage_deps"
         ]
       },
       "uci": ["leigod-manager"]
