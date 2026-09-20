@@ -32,8 +32,6 @@ PKG_DESC = "LuCI support for Leigod Accelerator Manager (fw4/nftables compatible
 PKG_URL  = "https://github.com/ArlenDu/luci-leigod-manager"
 PKG_MAINTAINER = "Arlen Du"
 PKG_DEPS = [
-    "rpcd",
-    "rpcd-mod-rpcsys",
     "luci-base",
 ]
 
