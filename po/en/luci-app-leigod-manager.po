@@ -198,3 +198,93 @@ msgstr "Paused"
 
 msgid "关键词过滤..."
 msgstr "Filter by keyword..."
+
+msgid "切换模式中..."
+msgstr "Switching mode..."
+
+msgid "切换到 TProxy 模式"
+msgstr "Switch to TProxy Mode"
+
+msgid "切换到 TUN 模式"
+msgstr "Switch to TUN Mode"
+
+msgid "模式已切换为 "
+msgstr "Mode switched to "
+
+msgid "切换模式失败: "
+msgstr "Failed to switch mode: "
+
+msgid "切换模式失败"
+msgstr "Failed to switch mode"
+
+msgid "检查依赖中..."
+msgstr "Checking dependencies..."
+
+msgid "需要安装依赖组件"
+msgstr "Dependencies Required"
+
+msgid "切换到 %s 模式需要安装对应的依赖组件，检测到以下依赖尚未就绪："
+msgstr "Switching to %s mode requires dependencies that are not yet installed:"
+
+msgid "所选的 %s 模式依赖尚未安装完成，无法启动加速服务。检测到缺少以下依赖："
+msgstr "The selected %s mode dependencies are not fully installed. Missing:"
+
+msgid "请先前往「安装管理」页面安装对应依赖，完成后即可正常切换模式。"
+msgstr "Please install the corresponding dependencies in Package Manager before switching modes."
+
+msgid "请先前往「安装管理」页面安装对应依赖，完成后即可正常保存并应用。"
+msgstr "Please install the corresponding dependencies in Package Manager before saving and applying."
+
+msgid "前往安装依赖"
+msgstr "Go to Package Manager"
+
+msgid "取消"
+msgstr "Cancel"
+
+msgid "⚠️ 依赖未就绪："
+msgstr "⚠️ Dependencies not ready: "
+
+msgid "当前选择的 %s 模式缺少以下必要依赖："
+msgstr "The selected %s mode is missing the following required dependencies: "
+
+msgid "。请在保存前前往 "
+msgstr ". Please visit "
+
+msgid " 页面安装依赖。"
+msgstr " page to install dependencies."
+
+msgid "确认要卸载当前模式下的扩展依赖吗？（固件内置只读组件将自动跳过）"
+msgstr "Are you sure you want to remove extension dependencies for this mode? (Firmware built-in components will be skipped)"
+
+msgid "确认要对 [%s] 执行 [%s] 操作吗？"
+msgstr "Are you sure you want to perform [%s] on [%s]?"
+
+msgid "提示："
+msgstr "Notice: "
+
+msgid "卸载扩展依赖"
+msgstr "Uninstall Extensions"
+
+msgid "只读内置"
+msgstr "ROM Built-in"
+
+msgid "已安装 (固件内置)"
+msgstr "Installed (ROM Built-in)"
+
+msgid "系统固件(ROM)内置组件，只读且无法卸载"
+msgstr "Firmware (ROM) built-in component, read-only and cannot be removed"
+
+msgid "系统固件内置组件，无法卸载"
+msgstr "Firmware built-in component, cannot be removed"
+
+msgid "组件未安装"
+msgstr "Component not installed"
+
+msgid "卸载此组件"
+msgstr "Uninstall this component"
+
+msgid "包管理器: "
+msgstr "Package Manager: "
+
+msgid "集中管理雷神加速器在 TUN 模式与 TProxy 模式下所需的内核模块与系统依赖包（支持 opkg 与 apk）。支持一键批量安装/重新安装/卸载，也可针对特定单个组件进行精准维护。"
+msgstr "Manage kernel modules and system dependencies required for TUN and TProxy modes (supports opkg and apk). Batch install, reinstall, and remove dependencies, or manage specific components individually."

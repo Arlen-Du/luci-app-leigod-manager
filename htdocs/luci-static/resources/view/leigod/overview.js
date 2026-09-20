@@ -36,6 +36,12 @@ var callSetMode = rpc.declare({
 	expect: {}
 });
 
+var callGetDeps = rpc.declare({
+	object: 'leigod',
+	method: 'get_deps',
+	expect: {}
+});
+
 // ── Helper renderers ─────────────────────────────────────────────────────────
 function renderStatusBadge(running) {
 	var cls  = running ? 'lg-badge lg-badge-running'  : 'lg-badge lg-badge-stopped';
@@ -264,16 +270,62 @@ return view.extend({
 			'class': 'lg-btn lg-btn-purple',
 			'id': 'lg-btn-switch-mode',
 			'click': function () {
-				this.disabled = true;
-				var cur = this.dataset.mode || status.mode || 'tproxy';
-				var target = cur === 'tun' ? 'tproxy' : 'tun';
-				this.textContent = _('切换模式中...');
 				var btn = this;
-				callSetMode(target).then(function (res) {
-					return waitForState(true, 6).then(function (s) {
-						var ok = (res && res.code === 0) || (s.mode === target && s.running);
-						var msg = ok ? _('模式已切换为 ') + target.toUpperCase() : ((res && res.message) ? _('切换模式失败: ') + res.message : _('切换模式失败'));
-						ui.addNotification(null, E('p', {}, [msg]), ok ? 'success' : 'danger');
+				var cur = btn.dataset.mode || status.mode || 'tproxy';
+				var target = cur === 'tun' ? 'tproxy' : 'tun';
+				btn.disabled = true;
+				btn.textContent = _('检查依赖中...');
+
+				callGetDeps().then(function (deps) {
+					var pkgs = (target === 'tun' ? (deps && deps.tun) : (deps && deps.tproxy)) || [];
+					var missing = [];
+					pkgs.forEach(function (p) {
+						if (!p.installed) missing.push(p.name);
+					});
+
+					if (missing.length > 0) {
+						btn.disabled = false;
+						btn.textContent = (btn.dataset.mode || 'tproxy') === 'tun' ? _('切换到 TProxy 模式') : _('切换到 TUN 模式');
+
+						ui.showModal(_('需要安装依赖组件'), [
+							E('p', {}, [
+								_('切换到 %s 模式需要安装对应的依赖组件，检测到以下依赖尚未就绪：').format(target.toUpperCase())
+							]),
+							E('div', { 'style': 'background: var(--cbi-section-border, #f9fafb); border: 1px solid var(--cbi-section-border, #e5e7eb); border-radius: 6px; padding: 10px 14px; margin: 12px 0;' }, [
+								E('ul', { 'style': 'margin: 0; padding-left: 20px; line-height: 1.8;' }, missing.map(function (pkg) {
+									return E('li', {}, [
+										E('strong', { 'style': 'font-family: monospace; color: #dc2626;' }, [pkg])
+									]);
+								}))
+							]),
+							E('p', { 'style': 'color: var(--cbi-label-color, #666); font-size: .88rem; margin-bottom: 20px;' }, [
+								_('请先前往「安装管理」页面安装对应依赖，完成后即可正常切换模式。')
+							]),
+							E('div', { 'class': 'right' }, [
+								E('button', {
+									'class': 'btn cbi-button-action',
+									'style': 'margin-right: 8px;',
+									'click': function () {
+										ui.hideModal();
+										location.href = L.url('admin/services/leigod/install');
+									}
+								}, [_('前往安装依赖')]),
+								E('button', {
+									'class': 'btn cbi-button-neutral',
+									'click': ui.hideModal
+								}, [_('取消')])
+							])
+						]);
+						return;
+					}
+
+					btn.textContent = _('切换模式中...');
+					return callSetMode(target).then(function (res) {
+						return waitForState(true, 6).then(function (s) {
+							var ok = (res && res.code === 0) || (s.mode === target && s.running);
+							var msg = ok ? _('模式已切换为 ') + target.toUpperCase() : ((res && res.message) ? _('切换模式失败: ') + res.message : _('切换模式失败'));
+							ui.addNotification(null, E('p', {}, [msg]), ok ? 'success' : 'danger');
+						});
 					});
 				}).catch(function (e) {
 					ui.addNotification(null, E('p', {}, [_('切换模式失败: ') + (e.message || e)]), 'danger');

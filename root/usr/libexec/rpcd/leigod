@@ -20,6 +20,284 @@ _json_bool() {
 	[ "$1" = "1" ] || [ "$1" = "true" ] && echo "true" || echo "false"
 }
 
+_detect_pkg_mgr() {
+	if command -v apk >/dev/null 2>&1; then
+		echo "apk"
+	elif command -v opkg >/dev/null 2>&1; then
+		echo "opkg"
+	elif [ -f "/lib/apk/db/installed" ] || [ -d "/lib/apk" ] || [ -d "/usr/lib/apk" ]; then
+		echo "apk"
+	elif [ -f "/usr/lib/opkg/status" ] || [ -f "/lib/opkg/status" ] || [ -f "/var/lib/opkg/status" ]; then
+		echo "opkg"
+	else
+		echo "none"
+	fi
+}
+
+_get_installed_pkgs_list() {
+	local mgr
+	mgr=$(_detect_pkg_mgr)
+	if [ "$mgr" = "apk" ]; then
+		if [ -f "/lib/apk/db/installed" ]; then
+			awk -F: '/^P:/{print $2}' /lib/apk/db/installed 2>/dev/null
+			return
+		elif [ -f "/usr/lib/apk/db/installed" ]; then
+			awk -F: '/^P:/{print $2}' /usr/lib/apk/db/installed 2>/dev/null
+			return
+		elif command -v apk >/dev/null 2>&1; then
+			apk info 2>/dev/null | sed -E 's/-[0-9].*//'
+			return
+		fi
+	fi
+
+	local installed_pkgs=""
+	local sf
+	for sf in /usr/lib/opkg/status /lib/opkg/status /var/lib/opkg/status; do
+		if [ -f "$sf" ]; then
+			installed_pkgs=$(awk '/^Package: /{pkg=$2} /^Status: / && /installed/{print pkg}' "$sf" 2>/dev/null)
+			[ -n "$installed_pkgs" ] && break
+		fi
+	done
+	if [ -z "$installed_pkgs" ] && command -v opkg >/dev/null 2>&1; then
+		installed_pkgs=$(opkg list-installed 2>/dev/null | awk '{print $1}')
+	fi
+	echo "$installed_pkgs"
+}
+
+_is_rom_pkg() {
+	local p="$1"
+	[ -d /rom ] || return 1
+
+	# 1. APK ROM database
+	if [ -f /rom/lib/apk/db/installed ]; then
+		case "$p" in
+			libpcap1|libpcap)
+				grep -qE "^P:(libpcap1|libpcap)$" /rom/lib/apk/db/installed 2>/dev/null && return 0
+				;;
+			iptables)
+				grep -qE "^P:(iptables|iptables-nft|xtables-nft)$" /rom/lib/apk/db/installed 2>/dev/null && return 0
+				;;
+			kmod-ipt-nat)
+				grep -qE "^P:(kmod-ipt-nat|kmod-nft-nat)$" /rom/lib/apk/db/installed 2>/dev/null && return 0
+				;;
+			kmod-ipt-ipset)
+				grep -qE "^P:(kmod-ipt-ipset|kmod-nft-ipset)$" /rom/lib/apk/db/installed 2>/dev/null && return 0
+				;;
+			kmod-ipt-tproxy)
+				grep -qE "^P:(kmod-ipt-tproxy|kmod-nft-tproxy)$" /rom/lib/apk/db/installed 2>/dev/null && return 0
+				;;
+			*)
+				grep -qx "P:${p}" /rom/lib/apk/db/installed 2>/dev/null && return 0
+				;;
+		esac
+	fi
+
+	# 2. OPKG ROM control files
+	local base
+	for base in /rom/usr/lib/opkg/info /rom/lib/opkg/info /rom/var/lib/opkg/info; do
+		[ -d "$base" ] || continue
+		case "$p" in
+			libpcap1|libpcap)
+				[ -f "${base}/libpcap1.control" ] || [ -f "${base}/libpcap.control" ] && return 0
+				;;
+			iptables)
+				[ -f "${base}/iptables.control" ] || [ -f "${base}/iptables-nft.control" ] || [ -f "${base}/xtables-nft.control" ] && return 0
+				;;
+			kmod-ipt-nat)
+				[ -f "${base}/kmod-ipt-nat.control" ] || [ -f "${base}/kmod-nft-nat.control" ] && return 0
+				;;
+			kmod-ipt-ipset)
+				[ -f "${base}/kmod-ipt-ipset.control" ] || [ -f "${base}/kmod-nft-ipset.control" ] && return 0
+				;;
+			kmod-ipt-tproxy)
+				[ -f "${base}/kmod-ipt-tproxy.control" ] || [ -f "${base}/kmod-nft-tproxy.control" ] && return 0
+				;;
+			*)
+				[ -f "${base}/${p}.control" ] && return 0
+				;;
+		esac
+	done
+
+	# 3. Fallback checks in /rom binaries
+	case "$p" in
+		iptables) [ -x /rom/usr/sbin/iptables ] || [ -x /rom/sbin/iptables ] && return 0 ;;
+		ipset)    [ -x /rom/usr/sbin/ipset ] || [ -x /rom/sbin/ipset ] && return 0 ;;
+		curl)     [ -x /rom/usr/bin/curl ] || [ -x /rom/bin/curl ] && return 0 ;;
+	esac
+	return 1
+}
+
+_is_installed_pkg() {
+	local p="$1"
+	local installed_pkgs="$2"
+	[ -z "$installed_pkgs" ] && installed_pkgs=$(_get_installed_pkgs_list)
+	local mgr
+	mgr=$(_detect_pkg_mgr)
+
+	# 1. APK package manager check
+	if [ "$mgr" = "apk" ]; then
+		if [ -n "$installed_pkgs" ]; then
+			case "$p" in
+				libpcap1|libpcap)
+					echo "$installed_pkgs" | grep -qE "^(libpcap1|libpcap)$" 2>/dev/null && return 0
+					;;
+				iptables)
+					echo "$installed_pkgs" | grep -qE "^(iptables|iptables-nft|iptables-legacy|xtables-nft)$" 2>/dev/null && return 0
+					;;
+				kmod-tun)
+					echo "$installed_pkgs" | grep -qx "kmod-tun" 2>/dev/null && return 0
+					;;
+				ipset)
+					echo "$installed_pkgs" | grep -qx "ipset" 2>/dev/null && return 0
+					;;
+				curl)
+					echo "$installed_pkgs" | grep -qx "curl" 2>/dev/null && return 0
+					;;
+				kmod-ipt-nat)
+					echo "$installed_pkgs" | grep -qE "^(kmod-ipt-nat|kmod-nft-nat)$" 2>/dev/null && return 0
+					;;
+				kmod-ipt-ipset)
+					echo "$installed_pkgs" | grep -qE "^(kmod-ipt-ipset|kmod-nft-ipset)$" 2>/dev/null && return 0
+					;;
+				kmod-ipt-tproxy)
+					echo "$installed_pkgs" | grep -qE "^(kmod-ipt-tproxy|kmod-nft-tproxy)$" 2>/dev/null && return 0
+					;;
+				iptables-mod-tproxy)
+					echo "$installed_pkgs" | grep -qx "iptables-mod-tproxy" 2>/dev/null && return 0
+					;;
+				*)
+					echo "$installed_pkgs" | grep -qx "$p" 2>/dev/null && return 0
+					;;
+			esac
+		fi
+		if command -v apk >/dev/null 2>&1; then
+			case "$p" in
+				libpcap1|libpcap)
+					apk info -e libpcap >/dev/null 2>&1 || apk info -e libpcap1 >/dev/null 2>&1 && return 0
+					;;
+				iptables)
+					apk info -e iptables >/dev/null 2>&1 || apk info -e iptables-nft >/dev/null 2>&1 || apk info -e xtables-nft >/dev/null 2>&1 && return 0
+					;;
+				kmod-ipt-nat)
+					apk info -e kmod-ipt-nat >/dev/null 2>&1 || apk info -e kmod-nft-nat >/dev/null 2>&1 && return 0
+					;;
+				kmod-ipt-ipset)
+					apk info -e kmod-ipt-ipset >/dev/null 2>&1 || apk info -e kmod-nft-ipset >/dev/null 2>&1 && return 0
+					;;
+				kmod-ipt-tproxy)
+					apk info -e kmod-ipt-tproxy >/dev/null 2>&1 || apk info -e kmod-nft-tproxy >/dev/null 2>&1 && return 0
+					;;
+				*)
+					apk info -e "$p" >/dev/null 2>&1 && return 0
+					;;
+			esac
+		fi
+		# Check if component is in read-only ROM
+		_is_rom_pkg "$p" && return 0
+		return 1
+	fi
+
+	# 2. OPKG package manager check
+	if [ "$mgr" = "opkg" ]; then
+		if [ -n "$installed_pkgs" ]; then
+			case "$p" in
+				libpcap1|libpcap)
+					echo "$installed_pkgs" | grep -qE "^(libpcap1|libpcap)$" 2>/dev/null && return 0
+					[ -f /usr/lib/opkg/info/libpcap1.control ] || [ -f /usr/lib/opkg/info/libpcap.control ] || [ -f /lib/opkg/info/libpcap1.control ] && return 0
+					;;
+				iptables)
+					echo "$installed_pkgs" | grep -qE "^(iptables|iptables-nft|iptables-legacy|xtables-nft)$" 2>/dev/null && return 0
+					[ -f /usr/lib/opkg/info/iptables.control ] || [ -f /usr/lib/opkg/info/iptables-nft.control ] || [ -f /usr/lib/opkg/info/xtables-nft.control ] && return 0
+					;;
+				kmod-tun)
+					echo "$installed_pkgs" | grep -qx "kmod-tun" 2>/dev/null && return 0
+					[ -f /usr/lib/opkg/info/kmod-tun.control ] || [ -f /lib/opkg/info/kmod-tun.control ] && return 0
+					;;
+				ipset)
+					echo "$installed_pkgs" | grep -qx "ipset" 2>/dev/null && return 0
+					[ -f /usr/lib/opkg/info/ipset.control ] && return 0
+					;;
+				curl)
+					echo "$installed_pkgs" | grep -qx "curl" 2>/dev/null && return 0
+					[ -f /usr/lib/opkg/info/curl.control ] && return 0
+					;;
+				kmod-ipt-nat)
+					echo "$installed_pkgs" | grep -qE "^(kmod-ipt-nat|kmod-nft-nat)$" 2>/dev/null && return 0
+					[ -f /usr/lib/opkg/info/kmod-ipt-nat.control ] || [ -f /usr/lib/opkg/info/kmod-nft-nat.control ] && return 0
+					;;
+				kmod-ipt-ipset)
+					echo "$installed_pkgs" | grep -qE "^(kmod-ipt-ipset|kmod-nft-ipset)$" 2>/dev/null && return 0
+					[ -f /usr/lib/opkg/info/kmod-ipt-ipset.control ] || [ -f /usr/lib/opkg/info/kmod-nft-ipset.control ] && return 0
+					;;
+				kmod-ipt-tproxy)
+					echo "$installed_pkgs" | grep -qE "^(kmod-ipt-tproxy|kmod-nft-tproxy)$" 2>/dev/null && return 0
+					[ -f /usr/lib/opkg/info/kmod-ipt-tproxy.control ] || [ -f /usr/lib/opkg/info/kmod-nft-tproxy.control ] && return 0
+					;;
+				iptables-mod-tproxy)
+					echo "$installed_pkgs" | grep -qx "iptables-mod-tproxy" 2>/dev/null && return 0
+					[ -f /usr/lib/opkg/info/iptables-mod-tproxy.control ] && return 0
+					;;
+				*)
+					echo "$installed_pkgs" | grep -qx "$p" 2>/dev/null && return 0
+					[ -f "/usr/lib/opkg/info/${p}.control" ] || [ -f "/lib/opkg/info/${p}.control" ] && return 0
+					;;
+			esac
+		fi
+		# Check if component is in read-only ROM
+		_is_rom_pkg "$p" && return 0
+		return 1
+	fi
+
+	# 3. Fallback check ONLY when NO package manager is available (mgr == "none")
+	case "$p" in
+		libpcap1|libpcap)
+			ls -d /usr/lib/libpcap* /lib/libpcap* /usr/lib64/libpcap* /lib64/libpcap* 2>/dev/null | grep -q . && return 0
+			[ -e /usr/lib/libpcap.so ] || [ -e /usr/lib/libpcap.so.1 ] || [ -e /lib/libpcap.so ] || [ -e /lib/libpcap.so.1 ] && return 0
+			;;
+		iptables)
+			[ -x /usr/sbin/iptables ] || [ -x /sbin/iptables ] || [ -x /usr/bin/iptables ] && return 0
+			iptables -V >/dev/null 2>&1 && return 0
+			;;
+		ipset)
+			[ -x /usr/sbin/ipset ] || [ -x /sbin/ipset ] || [ -x /usr/bin/ipset ] && return 0
+			;;
+		curl)
+			[ -x /usr/bin/curl ] || [ -x /bin/curl ] && return 0
+			;;
+		kmod-tun)
+			[ -e /dev/net/tun ] || lsmod 2>/dev/null | grep -q "^tun " && return 0
+			;;
+		iptables-mod-tproxy)
+			# Only check legacy iptables path; /usr/lib/xtables/libxt_TPROXY.so is part of iptables-nft, NOT iptables-mod-tproxy!
+			[ -f /usr/lib/iptables/libxt_TPROXY.so ] && return 0
+			;;
+	esac
+	return 1
+}
+
+_check_missing_deps() {
+	local mode="$1"
+	local installed_pkgs="$2"
+	[ -z "$installed_pkgs" ] && installed_pkgs=$(_get_installed_pkgs_list)
+	local pkgs="" missing=""
+	if [ "$mode" = "tun" ]; then
+		pkgs="libpcap1 iptables kmod-tun kmod-ipt-nat kmod-ipt-ipset ipset curl"
+	elif [ "$mode" = "tproxy" ]; then
+		pkgs="libpcap1 iptables iptables-mod-tproxy kmod-ipt-tproxy kmod-ipt-nat kmod-ipt-ipset ipset curl"
+	fi
+	for p in $pkgs; do
+		# In fw4 / nftables systems, iptables-nft already includes libxt_TPROXY.so, so iptables-mod-tproxy is not required as a standalone package
+		if [ "$p" = "iptables-mod-tproxy" ] && [ -f /usr/lib/xtables/libxt_TPROXY.so ]; then
+			continue
+		fi
+		if ! _is_installed_pkg "$p" "$installed_pkgs"; then
+			[ -n "$missing" ] && missing="${missing}, "
+			missing="${missing}${p}"
+		fi
+	done
+	echo "$missing"
+}
+
 get_arch() {
 	local raw
 	raw=$(uname -m 2>/dev/null)
@@ -217,11 +495,16 @@ _ensure_modules_loaded() {
 # TUN environment verification and automatic preparation
 _prepare_tun_env() {
 	# 1. Install dependencies specified for tun mode:
-	# libpcap1 kmod-tun kmod-ipt-nat kmod-ipt-ipset ipset curl
-	if command -v opkg >/dev/null 2>&1; then
-		opkg install libpcap1 kmod-tun kmod-ipt-nat kmod-ipt-ipset ipset curl ip-full >/dev/null 2>&1 || true
-	elif command -v apk >/dev/null 2>&1; then
-		apk add libpcap1 kmod-tun kmod-ipt-nat kmod-ipt-ipset ipset curl ip-full >/dev/null 2>&1 || true
+	# libpcap1/libpcap, kmod-tun, kmod-ipt-nat/kmod-nft-nat, kmod-ipt-ipset/kmod-nft-ipset, ipset, curl
+	local mgr
+	mgr=$(_detect_pkg_mgr)
+	if [ "$mgr" = "opkg" ]; then
+		opkg install libpcap1 kmod-tun kmod-ipt-nat kmod-ipt-ipset ipset curl ip-full >/dev/null 2>&1 || \
+		opkg install libpcap kmod-tun kmod-nft-nat kmod-nft-ipset ipset curl ip-full >/dev/null 2>&1 || true
+	elif [ "$mgr" = "apk" ]; then
+		apk add libpcap kmod-tun ipset curl ip-full >/dev/null 2>&1 || true
+		apk add kmod-ipt-nat >/dev/null 2>&1 || apk add kmod-nft-nat >/dev/null 2>&1 || true
+		apk add kmod-ipt-ipset >/dev/null 2>&1 || apk add kmod-nft-ipset >/dev/null 2>&1 || true
 	fi
 
 	# 2. Ensure /dev/net/tun exists with proper permissions
@@ -416,7 +699,12 @@ _get_version() {
 		fi
 	fi
 	if [ -z "$ver" ]; then
-		ver=$(opkg info leigod-acc 2>/dev/null | awk '/^Version:/{print $2; exit}')
+		if command -v opkg >/dev/null 2>&1; then
+			ver=$(opkg info leigod-acc 2>/dev/null | awk '/^Version:/{print $2; exit}')
+		fi
+		if [ -z "$ver" ] && command -v apk >/dev/null 2>&1; then
+			ver=$(apk info leigod-acc 2>/dev/null | awk -F'-' '{print $(NF-1)"-"$NF; exit}')
+		fi
 	fi
 	[ -n "$ver" ] && echo "$ver" || echo "running"
 }
@@ -424,7 +712,7 @@ _get_version() {
 # ---- RPC methods ------------------------------------------------------------
 
 do_get_status() {
-	local installed running monitor_running mode version fw tproxy_compat uptime_str
+	local installed running monitor_running mode version fw tproxy_compat uptime_str pkg_mgr
 	_is_installed && installed="true" || installed="false"
 	_is_running   && running="true"   || running="false"
 	_is_monitor_running && monitor_running="true" || monitor_running="false"
@@ -432,6 +720,7 @@ do_get_status() {
 	version=$(_get_version)
 	fw=$(_detect_fw)
 	tproxy_compat=$(_tproxy_compat)
+	pkg_mgr=$(_detect_pkg_mgr)
 
 	uptime_str=""
 	if _is_running; then
@@ -453,8 +742,8 @@ do_get_status() {
 		fi
 	fi
 
-	printf '{"installed":%s,"running":%s,"monitor_running":%s,"mode":"%s","version":"%s","fw":"%s","tproxy_compat":"%s","uptime":"%s"}\n' \
-		"$installed" "$running" "$monitor_running" "$mode" "$version" "$fw" "$tproxy_compat" "$uptime_str"
+	printf '{"installed":%s,"running":%s,"monitor_running":%s,"mode":"%s","version":"%s","fw":"%s","tproxy_compat":"%s","uptime":"%s","pkg_mgr":"%s"}\n' \
+		"$installed" "$running" "$monitor_running" "$mode" "$version" "$fw" "$tproxy_compat" "$uptime_str" "$pkg_mgr"
 }
 
 do_start() {
@@ -538,6 +827,14 @@ do_set_mode() {
 
 	case "$mode" in
 		tun|tproxy)
+			# 0. 检查目标模式依赖是否完整
+			local missing_deps
+			missing_deps=$(_check_missing_deps "$mode")
+			if [ -n "$missing_deps" ]; then
+				printf '{"code":1,"message":"%s 模式依赖未完成安装 (缺少: %s)，请先安装依赖"}\n' "$mode" "$missing_deps"
+				return
+			fi
+
 			# 1. 关闭雷神加速服务
 			[ -f /etc/init.d/acc ] && /etc/init.d/acc stop >/dev/null 2>&1 || true
 			_stop_monitor
@@ -706,6 +1003,21 @@ do_set_config() {
 	mode=$(echo "$input" | jsonfilter -e '@.mode' 2>/dev/null)
 	log_level=$(echo "$input" | jsonfilter -e '@.log_level' 2>/dev/null)
 
+	[ -z "$mode" ] && mode=$(_get_mode)
+	local cur_enabled
+	cur_enabled=$(uci get leigod-manager.base.enabled 2>/dev/null || echo "1")
+	[ -z "$enabled" ] && enabled="$cur_enabled"
+
+	# If service is enabled, check mode dependencies before saving/restarting
+	if [ "$enabled" != "0" ] && [ "$enabled" != "false" ]; then
+		local missing_deps
+		missing_deps=$(_check_missing_deps "$mode")
+		if [ -n "$missing_deps" ]; then
+			printf '{"code":1,"message":"%s 模式依赖未完成安装 (缺少: %s)，请先安装依赖"}\n' "$mode" "$missing_deps"
+			return
+		fi
+	fi
+
 	local init
 	init=$(_ensure_init_script)
 
@@ -749,101 +1061,26 @@ do_set_config() {
 }
 
 do_get_deps() {
-	local installed_pkgs=""
-	local sf
-	for sf in /usr/lib/opkg/status /lib/opkg/status /var/lib/opkg/status; do
-		if [ -f "$sf" ]; then
-			installed_pkgs=$(awk '/^Package: /{pkg=$2} /^Status: / && /installed/{print pkg}' "$sf" 2>/dev/null)
-			[ -n "$installed_pkgs" ] && break
-		fi
-	done
-	if [ -z "$installed_pkgs" ] && command -v opkg >/dev/null 2>&1; then
-		installed_pkgs=$(opkg list-installed 2>/dev/null | awk '{print $1}')
-	fi
-	if [ -z "$installed_pkgs" ] && command -v apk >/dev/null 2>&1; then
-		installed_pkgs=$(apk info 2>/dev/null)
-	fi
+	local installed_pkgs mgr
+	installed_pkgs=$(_get_installed_pkgs_list)
+	mgr=$(_detect_pkg_mgr)
 
-	_is_installed_pkg() {
-		local p="$1"
-		case "$p" in
-			libpcap1|libpcap)
-				echo "$installed_pkgs" | grep -qE "^(libpcap1|libpcap)$" 2>/dev/null && return 0
-				[ -f /usr/lib/opkg/info/libpcap1.control ] || [ -f /usr/lib/opkg/info/libpcap.control ] && return 0
-				[ -f /lib/opkg/info/libpcap1.control ] || [ -f /var/lib/opkg/info/libpcap1.control ] && return 0
-				ls -d /usr/lib/libpcap* /lib/libpcap* /usr/lib64/libpcap* /lib64/libpcap* 2>/dev/null | grep -q . && return 0
-				[ -e /usr/lib/libpcap.so ] || [ -e /usr/lib/libpcap.so.1 ] || [ -e /lib/libpcap.so ] || [ -e /lib/libpcap.so.1 ] && return 0
-				command -v apk >/dev/null 2>&1 && apk info -e libpcap1 libpcap >/dev/null 2>&1 && return 0
-				;;
-			iptables)
-				command -v iptables >/dev/null 2>&1 && return 0
-				[ -x /usr/sbin/iptables ] || [ -x /sbin/iptables ] || [ -x /usr/bin/iptables ] && return 0
-				iptables -V >/dev/null 2>&1 && return 0
-				echo "$installed_pkgs" | grep -qE "^(iptables|iptables-nft|iptables-legacy|xtables-nft)$" 2>/dev/null && return 0
-				[ -f /usr/lib/opkg/info/iptables.control ] || [ -f /usr/lib/opkg/info/iptables-nft.control ] || [ -f /usr/lib/opkg/info/xtables-nft.control ] && return 0
-				command -v apk >/dev/null 2>&1 && apk info -e iptables iptables-nft iptables-legacy >/dev/null 2>&1 && return 0
-				;;
-			kmod-tun)
-				[ -e /dev/net/tun ] || [ -d /sys/class/misc/tun ] && return 0
-				lsmod 2>/dev/null | grep -q "^tun " && return 0
-				echo "$installed_pkgs" | grep -qx "kmod-tun" 2>/dev/null && return 0
-				[ -f /usr/lib/opkg/info/kmod-tun.control ] || [ -f /lib/opkg/info/kmod-tun.control ] && return 0
-				;;
-			ipset)
-				command -v ipset >/dev/null 2>&1 && return 0
-				[ -x /usr/sbin/ipset ] || [ -x /sbin/ipset ] || [ -x /usr/bin/ipset ] && return 0
-				echo "$installed_pkgs" | grep -qx "ipset" 2>/dev/null && return 0
-				[ -f /usr/lib/opkg/info/ipset.control ] && return 0
-				;;
-			curl)
-				command -v curl >/dev/null 2>&1 && return 0
-				[ -x /usr/bin/curl ] || [ -x /bin/curl ] && return 0
-				echo "$installed_pkgs" | grep -qx "curl" 2>/dev/null && return 0
-				[ -f /usr/lib/opkg/info/curl.control ] && return 0
-				;;
-			kmod-ipt-nat)
-				lsmod 2>/dev/null | grep -qE "^(iptable_nat|nf_nat) " && return 0
-				echo "$installed_pkgs" | grep -qE "^(kmod-ipt-nat|kmod-nft-nat)$" 2>/dev/null && return 0
-				[ -f /usr/lib/opkg/info/kmod-ipt-nat.control ] || [ -f /usr/lib/opkg/info/kmod-nft-nat.control ] && return 0
-				;;
-			kmod-ipt-ipset)
-				lsmod 2>/dev/null | grep -qE "^(xt_set|ip_set) " && return 0
-				echo "$installed_pkgs" | grep -qE "^(kmod-ipt-ipset|kmod-nft-ipset)$" 2>/dev/null && return 0
-				[ -f /usr/lib/opkg/info/kmod-ipt-ipset.control ] || [ -f /usr/lib/opkg/info/kmod-nft-ipset.control ] && return 0
-				;;
-			kmod-ipt-tproxy)
-				lsmod 2>/dev/null | grep -qE "^(xt_TPROXY|nf_tproxy) " && return 0
-				echo "$installed_pkgs" | grep -qE "^(kmod-ipt-tproxy|kmod-nft-tproxy)$" 2>/dev/null && return 0
-				[ -f /usr/lib/opkg/info/kmod-ipt-tproxy.control ] || [ -f /usr/lib/opkg/info/kmod-nft-tproxy.control ] && return 0
-				;;
-			iptables-mod-tproxy)
-				ls -d /usr/lib/iptables/libxt_TPROXY.so /usr/lib/xtables/libxt_TPROXY.so 2>/dev/null | grep -q . && return 0
-				echo "$installed_pkgs" | grep -qE "^(iptables-mod-tproxy|iptables-nft)$" 2>/dev/null && return 0
-				[ -f /usr/lib/opkg/info/iptables-mod-tproxy.control ] && return 0
-				;;
-			*)
-				echo "$installed_pkgs" | grep -qx "$p" 2>/dev/null && return 0
-				[ -f "/usr/lib/opkg/info/${p}.control" ] || [ -f "/lib/opkg/info/${p}.control" ] && return 0
-				command -v "$p" >/dev/null 2>&1 && return 0
-				;;
-		esac
-		return 1
-	}
-
-	local tun_json="" tproxy_json="" p status
+	local tun_json="" tproxy_json="" p status ro
 	for p in libpcap1 iptables kmod-tun kmod-ipt-nat kmod-ipt-ipset ipset curl; do
-		if _is_installed_pkg "$p"; then status="true"; else status="false"; fi
+		if _is_installed_pkg "$p" "$installed_pkgs"; then status="true"; else status="false"; fi
+		if [ "$status" = "true" ] && _is_rom_pkg "$p"; then ro="true"; else ro="false"; fi
 		[ -n "$tun_json" ] && tun_json="${tun_json},"
-		tun_json="${tun_json}{\"name\":\"$p\",\"installed\":$status}"
+		tun_json="${tun_json}{\"name\":\"$p\",\"installed\":$status,\"readonly\":$ro}"
 	done
 
 	for p in libpcap1 iptables iptables-mod-tproxy kmod-ipt-tproxy kmod-ipt-nat kmod-ipt-ipset ipset curl; do
-		if _is_installed_pkg "$p"; then status="true"; else status="false"; fi
+		if _is_installed_pkg "$p" "$installed_pkgs"; then status="true"; else status="false"; fi
+		if [ "$status" = "true" ] && _is_rom_pkg "$p"; then ro="true"; else ro="false"; fi
 		[ -n "$tproxy_json" ] && tproxy_json="${tproxy_json},"
-		tproxy_json="${tproxy_json}{\"name\":\"$p\",\"installed\":$status}"
+		tproxy_json="${tproxy_json}{\"name\":\"$p\",\"installed\":$status,\"readonly\":$ro}"
 	done
 
-	printf '{"tun":[%s],"tproxy":[%s]}\n' "$tun_json" "$tproxy_json"
+	printf '{"pkg_mgr":"%s","tun":[%s],"tproxy":[%s]}\n' "$mgr" "$tun_json" "$tproxy_json"
 }
 
 do_manage_deps() {
@@ -863,6 +1100,14 @@ do_manage_deps() {
 	# Map legacy libpcap name to libpcap1
 	[ "$pkg" = "libpcap" ] && pkg="libpcap1"
 
+	# If removing a single package that is built into ROM, reject with clear explanation
+	if [ "$action" = "remove" ] && [ -n "$pkg" ]; then
+		if _is_rom_pkg "$pkg"; then
+			printf '{"code":1,"message":"组件 [%s] 为系统固件(ROM)内置组件，属于只读底层依赖，无法从路由器卸载。"}\n' "$pkg"
+			return
+		fi
+	fi
+
 	local target_pkgs=""
 	if [ -n "$pkg" ]; then
 		target_pkgs="$pkg"
@@ -880,8 +1125,10 @@ do_manage_deps() {
 	local log_file="/tmp/leigod_deps.log"
 	> "$log_file"
 	local code=0
+	local mgr
+	mgr=$(_detect_pkg_mgr)
 
-	if command -v opkg >/dev/null 2>&1; then
+	if [ "$mgr" = "opkg" ]; then
 		_run_opkg() {
 			local act="$1" p="$2"
 			case "$p" in
@@ -891,7 +1138,7 @@ do_manage_deps() {
 					elif [ "$act" = "reinstall" ]; then
 						opkg install --force-reinstall libpcap1 >> "$log_file" 2>&1 || opkg install --force-reinstall libpcap >> "$log_file" 2>&1
 					else
-						opkg remove libpcap1 >> "$log_file" 2>&1 || opkg remove libpcap >> "$log_file" 2>&1
+						opkg remove --force-depends libpcap1 libpcap >> "$log_file" 2>&1
 					fi
 					;;
 				iptables)
@@ -900,7 +1147,56 @@ do_manage_deps() {
 					elif [ "$act" = "reinstall" ]; then
 						opkg install --force-reinstall iptables-nft >> "$log_file" 2>&1 || opkg install --force-reinstall iptables >> "$log_file" 2>&1
 					else
-						opkg remove iptables-nft >> "$log_file" 2>&1 || opkg remove iptables >> "$log_file" 2>&1
+						opkg remove --force-depends iptables-nft iptables xtables-nft >> "$log_file" 2>&1
+					fi
+					;;
+				kmod-tun)
+					if [ "$act" = "install" ]; then
+						opkg install kmod-tun >> "$log_file" 2>&1
+					elif [ "$act" = "reinstall" ]; then
+						opkg install --force-reinstall kmod-tun >> "$log_file" 2>&1
+					else
+						opkg remove --force-depends kmod-tun >> "$log_file" 2>&1
+						rmmod tun >> "$log_file" 2>&1 || true
+					fi
+					;;
+				kmod-ipt-nat)
+					if [ "$act" = "install" ]; then
+						opkg install kmod-ipt-nat >> "$log_file" 2>&1 || opkg install kmod-nft-nat >> "$log_file" 2>&1
+					elif [ "$act" = "reinstall" ]; then
+						opkg install --force-reinstall kmod-ipt-nat >> "$log_file" 2>&1 || opkg install --force-reinstall kmod-nft-nat >> "$log_file" 2>&1
+					else
+						opkg remove --force-depends kmod-ipt-nat kmod-nft-nat >> "$log_file" 2>&1
+					fi
+					;;
+				kmod-ipt-ipset)
+					if [ "$act" = "install" ]; then
+						opkg install kmod-ipt-ipset >> "$log_file" 2>&1 || opkg install kmod-nft-ipset >> "$log_file" 2>&1
+					elif [ "$act" = "reinstall" ]; then
+						opkg install --force-reinstall kmod-ipt-ipset >> "$log_file" 2>&1 || opkg install --force-reinstall kmod-nft-ipset >> "$log_file" 2>&1
+					else
+						opkg remove --force-depends kmod-ipt-ipset kmod-nft-ipset >> "$log_file" 2>&1
+					fi
+					;;
+				kmod-ipt-tproxy)
+					if [ "$act" = "install" ]; then
+						opkg install kmod-ipt-tproxy >> "$log_file" 2>&1 || opkg install kmod-nft-tproxy >> "$log_file" 2>&1
+					elif [ "$act" = "reinstall" ]; then
+						opkg install --force-reinstall kmod-ipt-tproxy >> "$log_file" 2>&1 || opkg install --force-reinstall kmod-nft-tproxy >> "$log_file" 2>&1
+					else
+						opkg remove --force-depends kmod-ipt-tproxy kmod-nft-tproxy >> "$log_file" 2>&1
+						rmmod xt_TPROXY >> "$log_file" 2>&1 || true
+						rmmod nf_tproxy_core >> "$log_file" 2>&1 || true
+						rmmod nf_tproxy >> "$log_file" 2>&1 || true
+					fi
+					;;
+				iptables-mod-tproxy)
+					if [ "$act" = "install" ]; then
+						opkg install iptables-mod-tproxy >> "$log_file" 2>&1
+					elif [ "$act" = "reinstall" ]; then
+						opkg install --force-reinstall iptables-mod-tproxy >> "$log_file" 2>&1
+					else
+						opkg remove --force-depends iptables-mod-tproxy >> "$log_file" 2>&1
 					fi
 					;;
 				*)
@@ -909,38 +1205,133 @@ do_manage_deps() {
 					elif [ "$act" = "reinstall" ]; then
 						opkg install --force-reinstall "$p" >> "$log_file" 2>&1
 					else
-						opkg remove "$p" >> "$log_file" 2>&1
+						opkg remove --force-depends "$p" >> "$log_file" 2>&1
 					fi
 					;;
 			esac
 		}
 
 		for one_pkg in $target_pkgs; do
+			# In batch remove, skip ROM packages silently
+			if [ "$action" = "remove" ] && [ -z "$pkg" ] && _is_rom_pkg "$one_pkg"; then
+				echo "[跳过] $one_pkg 是固件ROM内置组件，跳过卸载。" >> "$log_file"
+				continue
+			fi
 			_run_opkg "$action" "$one_pkg"
 			[ $? -ne 0 ] && code=1
 		done
-	elif command -v apk >/dev/null 2>&1; then
-		case "$action" in
-			install)
-				apk add $target_pkgs >> "$log_file" 2>&1
-				code=$?
-				;;
-			reinstall)
-				apk fix $target_pkgs >> "$log_file" 2>&1 || apk add --upgrade $target_pkgs >> "$log_file" 2>&1
-				code=$?
-				;;
-			remove|uninstall)
-				apk del $target_pkgs >> "$log_file" 2>&1
-				code=$?
-				;;
-			*)
-				printf '{"code":1,"message":"不支持的操作: %s"}\n' "$action"
-				return
-				;;
-		esac
+	elif [ "$mgr" = "apk" ]; then
+		_run_apk() {
+			local act="$1" p="$2"
+			case "$p" in
+				libpcap|libpcap1)
+					if [ "$act" = "install" ]; then
+						apk add libpcap >> "$log_file" 2>&1 || apk add libpcap1 >> "$log_file" 2>&1
+					elif [ "$act" = "reinstall" ]; then
+						apk fix libpcap >> "$log_file" 2>&1 || apk fix libpcap1 >> "$log_file" 2>&1 || apk add --upgrade libpcap >> "$log_file" 2>&1
+					else
+						apk del libpcap libpcap1 >> "$log_file" 2>&1
+					fi
+					;;
+				iptables)
+					if [ "$act" = "install" ]; then
+						apk add iptables-nft >> "$log_file" 2>&1 || apk add iptables >> "$log_file" 2>&1
+					elif [ "$act" = "reinstall" ]; then
+						apk fix iptables-nft >> "$log_file" 2>&1 || apk fix iptables >> "$log_file" 2>&1 || apk add --upgrade iptables-nft >> "$log_file" 2>&1
+					else
+						apk del iptables-nft iptables xtables-nft >> "$log_file" 2>&1
+					fi
+					;;
+				kmod-tun)
+					if [ "$act" = "install" ]; then
+						apk add kmod-tun >> "$log_file" 2>&1
+					elif [ "$act" = "reinstall" ]; then
+						apk fix kmod-tun >> "$log_file" 2>&1 || apk add --upgrade kmod-tun >> "$log_file" 2>&1
+					else
+						apk del kmod-tun >> "$log_file" 2>&1
+						rmmod tun >> "$log_file" 2>&1 || true
+					fi
+					;;
+				kmod-ipt-nat)
+					if [ "$act" = "install" ]; then
+						apk add kmod-ipt-nat >> "$log_file" 2>&1 || apk add kmod-nft-nat >> "$log_file" 2>&1
+					elif [ "$act" = "reinstall" ]; then
+						apk fix kmod-ipt-nat >> "$log_file" 2>&1 || apk fix kmod-nft-nat >> "$log_file" 2>&1 || apk add --upgrade kmod-ipt-nat >> "$log_file" 2>&1
+					else
+						apk del kmod-ipt-nat kmod-nft-nat >> "$log_file" 2>&1
+					fi
+					;;
+				kmod-ipt-ipset)
+					if [ "$act" = "install" ]; then
+						apk add kmod-ipt-ipset >> "$log_file" 2>&1 || apk add kmod-nft-ipset >> "$log_file" 2>&1
+					elif [ "$act" = "reinstall" ]; then
+						apk fix kmod-ipt-ipset >> "$log_file" 2>&1 || apk fix kmod-nft-ipset >> "$log_file" 2>&1 || apk add --upgrade kmod-ipt-ipset >> "$log_file" 2>&1
+					else
+						apk del kmod-ipt-ipset kmod-nft-ipset >> "$log_file" 2>&1
+					fi
+					;;
+				kmod-ipt-tproxy)
+					if [ "$act" = "install" ]; then
+						apk add kmod-ipt-tproxy >> "$log_file" 2>&1 || apk add kmod-nft-tproxy >> "$log_file" 2>&1
+					elif [ "$act" = "reinstall" ]; then
+						apk fix kmod-ipt-tproxy >> "$log_file" 2>&1 || apk fix kmod-nft-tproxy >> "$log_file" 2>&1 || apk add --upgrade kmod-ipt-tproxy >> "$log_file" 2>&1
+					else
+						apk del kmod-ipt-tproxy kmod-nft-tproxy >> "$log_file" 2>&1
+						rmmod xt_TPROXY >> "$log_file" 2>&1 || true
+						rmmod nf_tproxy_core >> "$log_file" 2>&1 || true
+						rmmod nf_tproxy >> "$log_file" 2>&1 || true
+					fi
+					;;
+				iptables-mod-tproxy)
+					if [ "$act" = "install" ]; then
+						apk add iptables-mod-tproxy >> "$log_file" 2>&1
+					elif [ "$act" = "reinstall" ]; then
+						apk fix iptables-mod-tproxy >> "$log_file" 2>&1 || apk add --upgrade iptables-mod-tproxy >> "$log_file" 2>&1
+					else
+						apk del iptables-mod-tproxy >> "$log_file" 2>&1
+					fi
+					;;
+				*)
+					if [ "$act" = "install" ]; then
+						apk add "$p" >> "$log_file" 2>&1
+					elif [ "$act" = "reinstall" ]; then
+						apk fix "$p" >> "$log_file" 2>&1 || apk add --upgrade "$p" >> "$log_file" 2>&1
+					else
+						apk del "$p" >> "$log_file" 2>&1
+					fi
+					;;
+			esac
+		}
+
+		for one_pkg in $target_pkgs; do
+			# In batch remove, skip ROM packages silently
+			if [ "$action" = "remove" ] && [ -z "$pkg" ] && _is_rom_pkg "$one_pkg"; then
+				echo "[跳过] $one_pkg 是固件ROM内置组件，跳过卸载。" >> "$log_file"
+				continue
+			fi
+			_run_apk "$action" "$one_pkg"
+			[ $? -ne 0 ] && code=1
+		done
 	else
 		printf '{"code":1,"message":"系统未找到 opkg 或 apk 包管理器"}\n'
 		return
+	fi
+
+	# Accurate post-removal status verification
+	if [ "$action" = "remove" ]; then
+		if [ -n "$pkg" ]; then
+			if _is_installed_pkg "$pkg"; then
+				code=1
+				echo "[提示] 组件 [$pkg] 卸载后依然被检测为已安装，可能因固件只读内置或存在反向依赖。" >> "$log_file"
+			else
+				code=0
+				echo "[成功] 组件 [$pkg] 已从系统中成功卸载。" >> "$log_file"
+			fi
+		fi
+	fi
+
+	if grep -qi "in rootfs (rom), cannot remove" "$log_file" 2>/dev/null; then
+		echo "[说明] 带有只读(ROM)标识的组件固化在系统固件中，无需也不支持从 overlay 卸载。" >> "$log_file"
 	fi
 
 	local result
@@ -953,7 +1344,7 @@ do_manage_deps() {
 
 case "$1" in
 	list)
-		printf '{"get_status":{},"start":{},"stop":{},"restart":{},"set_mode":{"mode":"String"},"get_logs":{"lines":"Number"},"install":{},"uninstall":{},"get_config":{},"set_config":{"enabled":"Boolean","mode":"String","log_level":"String"},"get_deps":{},"manage_deps":{}}\n'
+		printf '{"get_status":{},"start":{},"stop":{},"restart":{},"set_mode":{"mode":"String"},"get_logs":{"lines":"Number"},"install":{},"uninstall":{},"get_config":{},"set_config":{"enabled":"Boolean","mode":"String","log_level":"String"},"get_deps":{},"manage_deps":{"mode":"String","action":"String","pkg":"String"}}\n'
 		;;
 	call)
 		case "$2" in

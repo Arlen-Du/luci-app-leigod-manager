@@ -198,7 +198,14 @@ return view.extend({
 			var actName = actionNames[action] || action;
 			var targetDesc = pkg ? pkg : (mode === 'tun' ? _('TUN 模式全部依赖') : _('TProxy 模式全部依赖'));
 
-			if (!confirm('确认要对 [' + targetDesc + '] 执行 [' + actName + '] 操作吗？')) {
+			var confirmPrompt;
+			if (action === 'remove' && !pkg) {
+				confirmPrompt = _('确认要卸载当前模式下的扩展依赖吗？（固件内置只读组件将自动跳过）');
+			} else {
+				confirmPrompt = _('确认要对 [%s] 执行 [%s] 操作吗？').format(targetDesc, actName);
+			}
+
+			if (!confirm(confirmPrompt)) {
 				return;
 			}
 
@@ -215,7 +222,8 @@ return view.extend({
 					ui.addNotification(null, E('p', {}, [actName + ' [' + targetDesc + '] ' + _('成功！正在刷新依赖状态...')]), 'success');
 					setTimeout(function () { location.reload(); }, 1500);
 				} else {
-					ui.addNotification(null, E('p', {}, [actName + ' [' + targetDesc + '] ' + _('失败，请查看下方依赖控制台日志')]), 'danger');
+					var errText = (res && res.message) ? res.message : _('操作未完成或失败');
+					ui.addNotification(null, E('p', {}, [actName + ' [' + targetDesc + '] ' + _('提示：') + errText]), 'danger');
 					if (btn) {
 						btn.disabled = false;
 						btn.textContent = actName;
@@ -252,7 +260,7 @@ return view.extend({
 			var btnBatchRemove = E('button', {
 				'class': 'lg-btn-sm lg-btn-red',
 				'click': function () { handleDepAction(modeKey, 'remove', null, this); }
-			}, [_('卸载全部')]);
+			}, [_('卸载扩展依赖')]);
 
 			var secHeader = E('div', { 'class': 'lg-sec-header' }, [
 				E('div', { 'class': 'lg-sec-title' }, [
@@ -280,17 +288,29 @@ return view.extend({
 
 				var btnSingleRemove = E('button', {
 					'class': 'lg-btn-sm lg-btn-red',
+					'disabled': (pkgItem.readonly || !pkgItem.installed) ? '' : null,
+					'title': pkgItem.readonly ? _('系统固件内置组件，无法卸载') : (!pkgItem.installed ? _('组件未安装') : _('卸载此组件')),
 					'click': function () { handleDepAction(modeKey, 'remove', pkgItem.name, this); }
-				}, [_('卸载')]);
+				}, [pkgItem.readonly ? _('只读内置') : _('卸载')]);
+
+				var statusBadge;
+				if (pkgItem.installed) {
+					if (pkgItem.readonly) {
+						statusBadge = E('span', {
+							'class': 'lg-badge lg-badge-info',
+							'title': _('系统固件(ROM)内置组件，只读且无法卸载')
+						}, [_('已安装 (固件内置)')]);
+					} else {
+						statusBadge = E('span', { 'class': 'lg-badge lg-badge-ok' }, [_('已安装')]);
+					}
+				} else {
+					statusBadge = E('span', { 'class': 'lg-badge lg-badge-warn' }, [_('未安装')]);
+				}
 
 				return E('tr', {}, [
 					E('td', { 'style': 'font-weight:600;font-family:monospace;' }, [pkgItem.name]),
 					E('td', { 'style': 'color:var(--cbi-label-color,#666);' }, [meta.desc]),
-					E('td', {}, [
-						E('span', {
-							'class': pkgItem.installed ? 'lg-badge lg-badge-ok' : 'lg-badge lg-badge-warn'
-						}, [pkgItem.installed ? _('已安装') : _('未安装')])
-					]),
+					E('td', {}, [statusBadge]),
 					E('td', { 'style': 'white-space:nowrap;' }, [
 						btnSingleInstall,
 						btnSingleReinstall,
@@ -332,6 +352,7 @@ return view.extend({
 
 		var tunSection = buildDepSection(_('TUN 模式依赖组件'), 'tun', tunPkgs);
 		var tproxySection = buildDepSection(_('TProxy 模式依赖组件'), 'tproxy', tproxyPkgs);
+		var pkgMgrName = (depsData.pkg_mgr || status.pkg_mgr || 'opkg').toUpperCase();
 
 		return E('div', {}, [
 			style,
@@ -368,9 +389,14 @@ return view.extend({
 
 			// 依赖管理卡片
 			E('div', { 'class': 'lg-card' }, [
-				E('h3', {}, [_('依赖管理')]),
+				E('h3', { 'style': 'display:flex;justify-content:space-between;align-items:center;' }, [
+					_('依赖管理'),
+					E('span', { 'class': 'lg-badge lg-badge-info', 'style': 'font-size:.78rem;font-weight:normal;' }, [
+						_('包管理器: ') + pkgMgrName
+					])
+				]),
 				E('p', { 'style': 'font-size:.88rem;color:var(--cbi-label-color,#666);margin:0 0 16px;line-height:1.5;' }, [
-					_('集中管理雷神加速器在 TUN 模式与 TProxy 模式下所需的内核模块与系统依赖包。支持一键批量安装/重新安装/卸载，也可针对特定单个组件进行精准维护。')
+					_('集中管理雷神加速器在 TUN 模式与 TProxy 模式下所需的内核模块与系统依赖包（支持 opkg 与 apk）。支持一键批量安装/重新安装/卸载，也可针对特定单个组件进行精准维护。')
 				]),
 				tunSection,
 				tproxySection,

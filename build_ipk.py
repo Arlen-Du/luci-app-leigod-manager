@@ -167,8 +167,12 @@ Description: {PKG_DESCRIPTION}
 [ -x /usr/libexec/rpcd/leigod ] && chmod 0755 /usr/libexec/rpcd/leigod
 rm -f /tmp/luci-indexcache.* 2>/dev/null || true
 rm -rf /tmp/luci-modulecache/ 2>/dev/null || true
-/etc/init.d/rpcd restart 2>/dev/null || true
-uci set luci.apply_needed=1 2>/dev/null || true
+# Reload rpcd (SIGHUP) to register new plugins and ACLs without terminating active user sessions
+if [ -x /etc/init.d/rpcd ]; then
+    /etc/init.d/rpcd reload 2>/dev/null || killall -HUP rpcd 2>/dev/null || true
+else
+    killall -HUP rpcd 2>/dev/null || true
+fi
 exit 0
 """
 
