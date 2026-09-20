@@ -1,0 +1,4 @@
+config leigod-manager 'base'
+	option enabled '1'
+	option mode 'tun'
+	option log_level 'info'

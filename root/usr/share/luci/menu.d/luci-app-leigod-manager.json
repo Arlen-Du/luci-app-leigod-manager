@@ -1,0 +1,44 @@
+{
+  "admin/services/leigod": {
+    "title": "雷神加速器",
+    "order": 60,
+    "action": {
+      "type": "firstchild"
+    },
+    "depends": {
+      "acl": ["luci-app-leigod-manager"]
+    }
+  },
+  "admin/services/leigod/overview": {
+    "title": "运行状态",
+    "order": 10,
+    "action": {
+      "type": "view",
+      "path": "leigod/overview"
+    }
+  },
+  "admin/services/leigod/settings": {
+    "title": "基本设置",
+    "order": 20,
+    "action": {
+      "type": "view",
+      "path": "leigod/settings"
+    }
+  },
+  "admin/services/leigod/install": {
+    "title": "安装管理",
+    "order": 30,
+    "action": {
+      "type": "view",
+      "path": "leigod/install"
+    }
+  },
+  "admin/services/leigod/logs": {
+    "title": "运行日志",
+    "order": 40,
+    "action": {
+      "type": "view",
+      "path": "leigod/logs"
+    }
+  }
+}

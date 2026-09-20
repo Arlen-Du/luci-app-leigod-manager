@@ -1,0 +1,127 @@
+#!/bin/sh /etc/rc.common
+# SPDX-License-Identifier: GPL-2.0-only
+# Init script for Leigod Accelerator (leigod-acc)
+# Reuses official /usr/sbin/leigod/monitor.sh to manage daemon lifecycle
+
+START=99
+STOP=10
+
+SBIN_DIR="/usr/sbin/leigod"
+MONITOR_SCRIPT="${SBIN_DIR}/monitor.sh"
+MONITOR_LOCK="${SBIN_DIR}/acc_daemon.monitor.lock"
+MONITOR_LOG="/tmp/leigod_acc_monitor.log"
+FIREWALL_INI="/etc/config/acc_firewall.ini"
+
+_find_pids_by_cmdline() {
+	local pattern="$1" p cmdline
+	for p in /proc/[0-9]*; do
+		[ -r "${p}/cmdline" ] || continue
+		cmdline=$(tr '\0' ' ' < "${p}/cmdline" 2>/dev/null) || continue
+		case "${cmdline}" in
+			*"${pattern}"*) basename "${p}" ;;
+		esac
+	done
+}
+
+_clean_rules() {
+	local chain="GAMEACC" tbl built name
+	for tbl in mangle filter nat; do
+		case "${tbl}" in filter) built="INPUT" ;; *) built="PREROUTING" ;; esac
+		iptables -t ${tbl} -D ${built} -j ${chain} 2>/dev/null || true
+		iptables -t ${tbl} -F ${chain} 2>/dev/null || true
+		iptables -t ${tbl} -X ${chain} 2>/dev/null || true
+	done
+	nft delete table inet tproxy_table 2>/dev/null || true
+	for name in $(ipset list -n 2>/dev/null); do
+		case "${name}" in
+			direct_*|target_*|proxy_*) ipset destroy "${name}" 2>/dev/null || true ;;
+		esac
+	done
+	for dev in $(ip link show 2>/dev/null | grep -o 'tun_[a-zA-Z0-9_-]*' | sort -u); do
+		ip link set "$dev" down 2>/dev/null || true
+		ip tuntap del mode tun dev "$dev" 2>/dev/null || true
+	done
+}
+
+start() {
+	local enabled mode
+	config_load leigod-manager
+	config_get enabled base enabled '1'
+	config_get mode base mode 'tun'
+
+	[ "$enabled" = "0" ] && return 0
+
+	# Ensure /dev/net/tun exists and modules are loaded in tun mode
+	if [ "$mode" = "tun" ]; then
+		for m in tun xt_set ip_set ip_set_hash_net ip_set_list_set iptable_mangle iptable_nat iptable_filter xt_mark; do
+			modprobe "$m" 2>/dev/null || true
+		done
+		[ -d /dev/net ] || mkdir -p /dev/net 2>/dev/null
+		[ -c /dev/net/tun ] || mknod /dev/net/tun c 10 200 2>/dev/null || true
+		chmod 0666 /dev/net/tun 2>/dev/null || true
+	fi
+
+	# Ensure /etc/config/acc_firewall.ini has mode, backend, and tproxy_ip
+	mkdir -p "$(dirname "$FIREWALL_INI")"
+	if [ -f "$FIREWALL_INI" ]; then
+		grep -q "^mode=" "$FIREWALL_INI" && sed -i "s/^mode=.*/mode=${mode}/" "$FIREWALL_INI" || echo "mode=${mode}" >> "$FIREWALL_INI"
+		grep -q "^backend=" "$FIREWALL_INI" && sed -i "s/^backend=.*/backend=iptables/" "$FIREWALL_INI" || echo "backend=iptables" >> "$FIREWALL_INI"
+		grep -q "^tproxy_ip=" "$FIREWALL_INI" && sed -i "s/^tproxy_ip=.*/tproxy_ip=10.20.30.40/" "$FIREWALL_INI" || echo "tproxy_ip=10.20.30.40" >> "$FIREWALL_INI"
+	else
+		cat > "$FIREWALL_INI" <<EOF
+[firewall]
+backend=iptables
+mode=${mode}
+tproxy_ip=10.20.30.40
+EOF
+	fi
+
+	# Disable legacy procd acc init if present to avoid dual-supervision conflict
+	if [ -f "/etc/init.d/acc" ]; then
+		/etc/init.d/acc stop >/dev/null 2>&1 || true
+		/etc/init.d/acc disable >/dev/null 2>&1 || true
+	fi
+
+	# Start official monitor.sh to supervise accelerator
+	if [ -f "$MONITOR_SCRIPT" ]; then
+		chmod 0755 "$MONITOR_SCRIPT" 2>/dev/null || true
+		# Kill any old monitor process and remove lock
+		for p in $(_find_pids_by_cmdline "monitor.sh"); do
+			kill -9 "$p" 2>/dev/null || true
+		done
+		rm -f "$MONITOR_LOCK" 2>/dev/null || true
+		if command -v nohup >/dev/null 2>&1; then
+			nohup sh "$MONITOR_SCRIPT" >> "$MONITOR_LOG" 2>&1 &
+		else
+			sh "$MONITOR_SCRIPT" >> "$MONITOR_LOG" 2>&1 &
+		fi
+	fi
+}
+
+stop() {
+	# Stop monitor supervisor
+	for p in $(_find_pids_by_cmdline "monitor.sh"); do
+		kill -9 "$p" 2>/dev/null || true
+	done
+	rm -f "$MONITOR_LOCK" 2>/dev/null || true
+
+	# Kill acc-gw and upgrade monitor
+	for p in $(_find_pids_by_cmdline "acc-gw.router") $(_find_pids_by_cmdline "acc_upgrade_monitor"); do
+		kill -9 "$p" 2>/dev/null || true
+	done
+
+	# Clean firewall rules and tun devices
+	_clean_rules
+
+	# Stop legacy acc init if present
+	if [ -f "/etc/init.d/acc" ]; then
+		/etc/init.d/acc stop >/dev/null 2>&1 || true
+		/etc/init.d/acc disable >/dev/null 2>&1 || true
+	fi
+}
+
+restart() {
+	stop
+	sleep 1
+	start
+}

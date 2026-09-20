@@ -1,0 +1,218 @@
+msgid ""
+msgstr ""
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+
+msgid "雷神加速器"
+msgstr "雷神加速器"
+
+msgid "运行状态"
+msgstr "运行状态"
+
+msgid "基本设置"
+msgstr "基本设置"
+
+msgid "安装管理"
+msgstr "安装管理"
+
+msgid "运行日志"
+msgstr "运行日志"
+
+msgid "运行中"
+msgstr "运行中"
+
+msgid "已停止"
+msgstr "已停止"
+
+msgid "服务状态"
+msgstr "服务状态"
+
+msgid "运行模式"
+msgstr "运行模式"
+
+msgid "运行时长"
+msgstr "运行时长"
+
+msgid "版本"
+msgstr "版本"
+
+msgid "防火墙框架"
+msgstr "防火墙框架"
+
+msgid "服务控制"
+msgstr "服务控制"
+
+msgid "启动"
+msgstr "启动"
+
+msgid "停止"
+msgstr "停止"
+
+msgid "重启"
+msgstr "重启"
+
+msgid "启动中..."
+msgstr "启动中..."
+
+msgid "停止中..."
+msgstr "停止中..."
+
+msgid "重启中..."
+msgstr "重启中..."
+
+msgid "服务已启动"
+msgstr "服务已启动"
+
+msgid "服务已停止"
+msgstr "服务已停止"
+
+msgid "服务已重启"
+msgstr "服务已重启"
+
+msgid "启动失败"
+msgstr "启动失败"
+
+msgid "停止失败"
+msgstr "停止失败"
+
+msgid "leigod-acc 未安装"
+msgstr "leigod-acc 未安装"
+
+msgid "请前往「安装管理」页面安装 leigod-acc 软件包。"
+msgstr "请前往「安装管理」页面安装 leigod-acc 软件包。"
+
+msgid "兼容性警告"
+msgstr "兼容性警告"
+
+msgid "开机自启"
+msgstr "开机自启"
+
+msgid "路由器启动时自动运行雷神加速器"
+msgstr "路由器启动时自动运行雷神加速器"
+
+msgid "TUN 模式兼容性最佳；TProxy 模式性能较高但需 iptables 支持"
+msgstr "TUN 模式兼容性最佳；TProxy 模式性能较高但需 iptables 支持"
+
+
+msgid "日志级别"
+msgstr "日志级别"
+
+msgid "控制写入日志文件的详细程度"
+msgstr "控制写入日志文件的详细程度"
+
+msgid "调试 (debug)"
+msgstr "调试 (debug)"
+
+msgid "信息 (info)"
+msgstr "信息 (info)"
+
+msgid "警告 (warn)"
+msgstr "警告 (warn)"
+
+msgid "保存并应用"
+msgstr "保存并应用"
+
+msgid "保存中..."
+msgstr "保存中..."
+
+msgid "设置已保存，服务将自动重启"
+msgstr "设置已保存，服务将自动重启"
+
+msgid "保存失败："
+msgstr "保存失败："
+
+msgid "请求失败："
+msgstr "请求失败："
+
+msgid "软件包状态"
+msgstr "软件包状态"
+
+msgid "安装状态"
+msgstr "安装状态"
+
+msgid "已安装"
+msgstr "已安装"
+
+msgid "未安装"
+msgstr "未安装"
+
+msgid "TProxy 兼容"
+msgstr "TProxy 兼容"
+
+msgid "安装"
+msgstr "安装"
+
+msgid "卸载"
+msgstr "卸载"
+
+msgid "刷新页面"
+msgstr "刷新页面"
+
+msgid "安装中..."
+msgstr "安装中..."
+
+msgid "卸载中..."
+msgstr "卸载中..."
+
+msgid "安装成功！请刷新页面。"
+msgstr "安装成功！请刷新页面。"
+
+msgid "安装失败，请查看下方日志"
+msgstr "安装失败，请查看下方日志"
+
+msgid "卸载成功！请刷新页面。"
+msgstr "卸载成功！请刷新页面。"
+
+msgid "卸载失败，请查看下方日志"
+msgstr "卸载失败，请查看下方日志"
+
+msgid "确认要安装 leigod-acc 吗？这将通过 opkg 从软件源下载安装。"
+msgstr "确认要安装 leigod-acc 吗？这将通过 opkg 从软件源下载安装。"
+
+msgid "确认要卸载 leigod-acc 吗？这将停止服务并移除软件包。"
+msgstr "确认要卸载 leigod-acc 吗？这将停止服务并移除软件包。"
+
+msgid "依赖说明"
+msgstr "依赖说明"
+
+msgid "服务日志"
+msgstr "服务日志"
+
+msgid "系统日志 (leigod)"
+msgstr "系统日志 (leigod)"
+
+msgid "刷新"
+msgstr "刷新"
+
+msgid "清空显示"
+msgstr "清空显示"
+
+msgid "暂停滚动"
+msgstr "暂停滚动"
+
+msgid "自动滚动"
+msgstr "自动滚动"
+
+msgid "已暂停"
+msgstr "已暂停"
+
+msgid "关键词过滤..."
+msgstr "关键词过滤..."
+
+msgid "切换模式中..."
+msgstr "切换模式中..."
+
+msgid "切换到 TProxy 模式"
+msgstr "切换到 TProxy 模式"
+
+msgid "切换到 TUN 模式"
+msgstr "切换到 TUN 模式"
+
+msgid "模式已切换为 "
+msgstr "模式已切换为 "
+
+msgid "切换模式失败: "
+msgstr "切换模式失败: "
+
+msgid "切换模式失败"
+msgstr "切换模式失败"

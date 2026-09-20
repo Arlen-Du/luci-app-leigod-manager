@@ -1,0 +1,25 @@
+{
+  "luci-app-leigod-manager": {
+    "description": "Grant access for LuCI Leigod Accelerator Manager",
+    "read": {
+      "ubus": {
+        "leigod": ["get_status", "get_logs", "get_config"]
+      },
+      "uci": ["leigod-manager"]
+    },
+    "write": {
+      "ubus": {
+        "leigod": [
+          "start",
+          "stop",
+          "restart",
+          "set_mode",
+          "install",
+          "uninstall",
+          "set_config"
+        ]
+      },
+      "uci": ["leigod-manager"]
+    }
+  }
+}

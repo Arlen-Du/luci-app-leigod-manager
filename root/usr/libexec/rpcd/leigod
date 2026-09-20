@@ -1,0 +1,771 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-only
+# rpcd plugin for luci-app-leigod-manager
+# Refactored strictly based on /usr/sbin/leigod official runtime implementation:
+#   acc.init, monitor.sh, leigod_uninstall.sh, acc-gw.router.<arch>
+
+SBIN_DIR="/usr/sbin/leigod"
+BINARY_PREFIX="acc-gw.router"
+FIREWALL_INI="/etc/config/acc_firewall.ini"
+VERSION_INI="/etc/config/acc_version.ini"
+ACC_LOG="/tmp/leigod_acc_init.log"
+MONITOR_SCRIPT="${SBIN_DIR}/monitor.sh"
+MONITOR_LOCK="${SBIN_DIR}/acc_daemon.monitor.lock"
+MONITOR_LOG="/tmp/leigod_acc_monitor.log"
+UNINSTALL_LOG="/tmp/leigod_acc_uninstall.log"
+
+# ---- helpers ----------------------------------------------------------------
+
+_json_bool() {
+	[ "$1" = "1" ] || [ "$1" = "true" ] && echo "true" || echo "false"
+}
+
+get_arch() {
+	local raw
+	raw=$(uname -m 2>/dev/null)
+	case "${raw}" in
+		x86_64) echo "amd64" ;;
+		aarch64|aarch64_be) echo "arm64" ;;
+		mips|mips64) echo "mipsel" ;;
+		armv7l|armv7hl|armv6l|armv5tel) echo "arm" ;;
+		*) echo "${raw}" ;;
+	esac
+}
+
+# Find all PIDs whose /proc/<pid>/cmdline contains pattern
+_find_pids_by_cmdline() {
+	local pattern="$1" p cmdline
+	for p in /proc/[0-9]*; do
+		[ -r "${p}/cmdline" ] || continue
+		cmdline=$(tr '\0' ' ' < "${p}/cmdline" 2>/dev/null) || continue
+		case "${cmdline}" in
+			*"${pattern}"*) basename "${p}" ;;
+		esac
+	done
+}
+
+# Find daemon PID (distinguishes -r daemon from -r web)
+_get_daemon_pid() {
+	local arch p cmdline
+	arch=$(get_arch)
+	for p in /proc/[0-9]*; do
+		[ -r "${p}/cmdline" ] || continue
+		cmdline=$(tr '\0' ' ' < "${p}/cmdline" 2>/dev/null) || continue
+		case "${cmdline}" in
+			*"${BINARY_PREFIX}.${arch}"*"-r daemon"*|*"${BINARY_PREFIX}"*"-r daemon"*|*"leigod-acc"*)
+				basename "${p}"
+				return 0
+				;;
+		esac
+	done
+	return 1
+}
+
+# Check if monitor.sh watchdog is running
+_is_monitor_running() {
+	local p
+	for p in $(_find_pids_by_cmdline "monitor.sh"); do
+		return 0
+	done
+	return 1
+}
+
+# Terminate monitor.sh watchdog
+_stop_monitor() {
+	local p
+	for p in $(_find_pids_by_cmdline "monitor.sh"); do
+		kill -9 "$p" >/dev/null 2>&1 || true
+	done
+	rm -f "$MONITOR_LOCK" 2>/dev/null || true
+}
+
+# Launch monitor.sh watchdog (official /usr/sbin/leigod/monitor.sh)
+_start_monitor() {
+	[ -f "$MONITOR_SCRIPT" ] || return 1
+	chmod 0755 "$MONITOR_SCRIPT" 2>/dev/null || true
+
+	# Disable legacy procd acc init if present to prevent conflict
+	if [ -f "/etc/init.d/acc" ]; then
+		/etc/init.d/acc stop >/dev/null 2>&1 || true
+		/etc/init.d/acc disable >/dev/null 2>&1 || true
+	fi
+
+	# Stop any stale monitor instance and clear lock
+	_stop_monitor
+
+	if command -v nohup >/dev/null 2>&1; then
+		nohup sh "$MONITOR_SCRIPT" >> "$MONITOR_LOG" 2>&1 &
+	else
+		sh "$MONITOR_SCRIPT" >> "$MONITOR_LOG" 2>&1 &
+	fi
+	return 0
+}
+
+
+_is_installed() {
+	local arch
+	arch=$(get_arch)
+	[ -f "${SBIN_DIR}/${BINARY_PREFIX}.${arch}" ] || \
+	[ -f "/etc/init.d/acc" ] || \
+	[ -d "${SBIN_DIR}" ] || \
+	[ -x "/usr/sbin/leigod-acc" ]
+}
+
+_is_running() {
+	local pid
+	pid=$(_get_daemon_pid)
+	if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+		return 0
+	fi
+	return 1
+}
+
+_detect_fw() {
+	if command -v nft >/dev/null 2>&1 && nft list ruleset >/dev/null 2>&1; then
+		echo "fw4"
+	else
+		echo "fw3"
+	fi
+}
+
+_tproxy_compat() {
+	local fw
+	fw=$(_detect_fw)
+	if [ "$fw" = "fw4" ]; then
+		if iptables-legacy -t mangle -L >/dev/null 2>&1; then
+			echo "iptables-legacy"
+		else
+			echo "none"
+		fi
+	else
+		echo "iptables"
+	fi
+}
+
+_read_ini_field() {
+	local field="$1" file="${2:-$FIREWALL_INI}"
+	[ -f "${file}" ] || return 1
+	grep "^${field}=" "${file}" 2>/dev/null | head -1 | cut -d'=' -f2- | tr -d '\r\n"'
+}
+
+# Clean accelerator firewall rules (aligned with acc.init and leigod_uninstall.sh)
+_clean_rules() {
+	local chain="GAMEACC" tbl built name
+	# iptables: mangle / filter / nat
+	for tbl in mangle filter nat; do
+		case "${tbl}" in filter) built="INPUT" ;; *) built="PREROUTING" ;; esac
+		iptables -t ${tbl} -D ${built} -j ${chain} 2>/dev/null || true
+		iptables -t ${tbl} -F ${chain} 2>/dev/null || true
+		iptables -t ${tbl} -X ${chain} 2>/dev/null || true
+	done
+	# nftables: inet tproxy_table
+	nft delete table inet tproxy_table 2>/dev/null || true
+	# ipset: direct_* / target_* / proxy_*
+	for name in $(ipset list -n 2>/dev/null); do
+		case "${name}" in
+			direct_*|target_*|proxy_*) ipset destroy "${name}" 2>/dev/null || true ;;
+		esac
+	done
+	# Remove any dangling tun interfaces
+	local dev
+	for dev in $(ip link show 2>/dev/null | grep -o 'tun_[a-zA-Z0-9_-]*' | sort -u); do
+		ip link set "$dev" down 2>/dev/null || true
+		ip tuntap del mode tun dev "$dev" 2>/dev/null || true
+	done
+}
+
+# Graceful termination then SIGKILL (aligned with leigod_uninstall.sh)
+_kill_acc() {
+	local arch pat p
+	arch=$(get_arch)
+	# 1. SIGUSR1 graceful session close
+	for pat in "${BINARY_PREFIX}.${arch}" "${BINARY_PREFIX}" "acc_upgrade_monitor" "monitor.sh" "leigod-acc"; do
+		for p in $(_find_pids_by_cmdline "${pat}"); do
+			kill -USR1 "${p}" >/dev/null 2>&1 || true
+		done
+	done
+	sleep 1
+	# 2. SIGKILL fallback
+	for pat in "${BINARY_PREFIX}.${arch}" "${BINARY_PREFIX}" "acc_upgrade_monitor" "monitor.sh" "leigod-acc"; do
+		for p in $(_find_pids_by_cmdline "${pat}"); do
+			kill -9 "${p}" >/dev/null 2>&1 || true
+		done
+	done
+}
+
+# Ensure kernel modules and /dev/net/tun exist (aligned with acc.init and monitor.sh)
+_ensure_modules_loaded() {
+	local mode="${1:-tproxy}" modules m
+	if [ "${mode}" = "tproxy" ]; then
+		modules="xt_TPROXY nf_tproxy_core xt_set ip_set ip_set_hash_net ip_set_list_set"
+	else
+		# TUN mode in acc-gw.router strictly requires:
+		# - tun (for /dev/net/tun)
+		# - ip_set, xt_set (for create_tun_ipset: target_<dev> and direct_<dev>)
+		# - iptables mangle/nat/filter/mark (for create_tun_iptables)
+		modules="tun xt_set ip_set ip_set_hash_net ip_set_list_set iptable_mangle iptable_nat iptable_filter xt_mark"
+		[ -d /dev/net ] || mkdir -p /dev/net 2>/dev/null
+		[ -c /dev/net/tun ] || mknod /dev/net/tun c 10 200 2>/dev/null || true
+		chmod 0666 /dev/net/tun 2>/dev/null || true
+	fi
+
+	for m in ${modules}; do
+		if ! lsmod 2>/dev/null | grep -q "^${m} "; then
+			modprobe "${m}" >/dev/null 2>&1 || true
+		fi
+	done
+}
+
+# TUN environment verification and automatic preparation
+_prepare_tun_env() {
+	local err=""
+
+	# 1. Load / ensure tun kernel module
+	if ! lsmod 2>/dev/null | grep -q "^tun "; then
+		modprobe tun >/dev/null 2>&1 || true
+	fi
+
+	# Attempt to install kmod-tun if not loaded and device missing
+	if ! lsmod 2>/dev/null | grep -q "^tun " && [ ! -c /dev/net/tun ]; then
+		if command -v apk >/dev/null 2>&1; then
+			apk add kmod-tun >/dev/null 2>&1 || true
+		elif command -v opkg >/dev/null 2>&1; then
+			opkg install kmod-tun >/dev/null 2>&1 || true
+		fi
+		modprobe tun >/dev/null 2>&1 || true
+	fi
+
+	# 2. Ensure /dev/net/tun exists with proper permissions
+	[ -d /dev/net ] || mkdir -p /dev/net 2>/dev/null
+	if [ ! -c /dev/net/tun ]; then
+		mknod /dev/net/tun c 10 200 2>/dev/null || true
+		chmod 0666 /dev/net/tun 2>/dev/null || true
+	fi
+
+	if [ ! -c /dev/net/tun ]; then
+		echo "缺少 /dev/net/tun 设备，请安装 kmod-tun 内核模块 (apk add kmod-tun / opkg install kmod-tun)"
+		return 1
+	fi
+
+	# 3. Check ip tuntap support (BusyBox default ip lacks tuntap, requires ip-full)
+	if ! ip tuntap >/dev/null 2>&1; then
+		if command -v apk >/dev/null 2>&1; then
+			apk add ip-full >/dev/null 2>&1 || true
+		elif command -v opkg >/dev/null 2>&1; then
+			opkg install ip-full >/dev/null 2>&1 || true
+		fi
+	fi
+
+	if ! ip tuntap >/dev/null 2>&1; then
+		echo "系统 ip 命令不支持 tuntap，请安装 ip-full 软件包 (apk add ip-full / opkg install ip-full)"
+		return 1
+	fi
+
+	# 4. Load all required kernel modules for TUN mode
+	_ensure_modules_loaded "tun"
+
+	# Check ipset command and support
+	if ! command -v ipset >/dev/null 2>&1; then
+		if command -v apk >/dev/null 2>&1; then
+			apk add ipset kmod-ipt-ipset >/dev/null 2>&1 || true
+		elif command -v opkg >/dev/null 2>&1; then
+			opkg install ipset kmod-ipt-ipset >/dev/null 2>&1 || true
+		fi
+	fi
+
+	return 0
+}
+
+# Extract latest error message from daemon or log files
+_get_last_error() {
+	local err=""
+	if [ -f "${SBIN_DIR}/acc_daemon.out" ]; then
+		err=$(tail -n 15 "${SBIN_DIR}/acc_daemon.out" 2>/dev/null | grep -iE "fail|error|fatal|unsupport|cannot|abort" | tail -1)
+	fi
+	if [ -z "$err" ]; then
+		local f
+		for f in /tmp/acc/*.log; do
+			[ -f "$f" ] || continue
+			err=$(tail -n 15 "$f" 2>/dev/null | grep -iE "failed|error|fatal|unsupport" | tail -1)
+			[ -n "$err" ] && break
+		done
+	fi
+	if [ -z "$err" ] && [ -f "$ACC_LOG" ]; then
+		err=$(tail -n 10 "$ACC_LOG" 2>/dev/null | grep -iE "fail|error" | tail -1)
+	fi
+	if [ -z "$err" ]; then
+		err=$(logread 2>/dev/null | grep -iE "acc-gw|leigod" | grep -iE "failed|error|exit" | tail -1)
+	fi
+	[ -n "$err" ] && echo "$err" | tr '\r\n"' ' ' | sed 's/^[ \t]*//;s/[ \t]*$//'
+}
+
+# Ensure /etc/init.d/acc exists and is executable
+_ensure_init_script() {
+	if [ ! -f "/etc/init.d/acc" ] && [ -f "${SBIN_DIR}/acc.init" ]; then
+		cp -f "${SBIN_DIR}/acc.init" "/etc/init.d/acc"
+		chmod 0755 "/etc/init.d/acc"
+	fi
+	if [ -f "/etc/init.d/acc" ]; then
+		chmod 0755 "/etc/init.d/acc" 2>/dev/null || true
+		# Repair any previous corrupted substitutions (--mode tun -> ${args})
+		sed -i 's|--mode tun|\${args}|g' /etc/init.d/acc 2>/dev/null || true
+		sed -i 's/\[ "\${mode}" = "tun" \] && args=/\[ "\${mode}" = "tproxy" \] && args=/g' /etc/init.d/acc 2>/dev/null || true
+		echo "/etc/init.d/acc"
+	elif [ -f "/etc/init.d/leigod" ]; then
+		chmod 0755 "/etc/init.d/leigod" 2>/dev/null || true
+		echo "/etc/init.d/leigod"
+	elif [ -f "/etc/init.d/leigod-acc" ]; then
+		chmod 0755 "/etc/init.d/leigod-acc" 2>/dev/null || true
+		echo "/etc/init.d/leigod-acc"
+	fi
+}
+
+_get_mode() {
+	# 1. Check running process cmdline
+	local pid
+	pid=$(_get_daemon_pid)
+	if [ -n "$pid" ] && [ -r "/proc/$pid/cmdline" ]; then
+		local cmd
+		cmd=$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null)
+		case "$cmd" in
+			*"-m tun "*|*"--mode tun "*|*"-m tun"|*"--mode tun")
+				echo "tun"
+				return
+				;;
+			*"-m tproxy "*|*"--mode tproxy "*|*"-m tproxy"|*"--mode tproxy")
+				echo "tproxy"
+				return
+				;;
+		esac
+	fi
+
+	# 2. Check /etc/config/acc_firewall.ini
+	local ini_mode
+	ini_mode=$(_read_ini_field mode "$FIREWALL_INI")
+	[ "$ini_mode" = "tun" ] && { echo "tun"; return; }
+	[ "$ini_mode" = "tproxy" ] && { echo "tproxy"; return; }
+
+	# 3. Check UCI accelerator.base.tun (Lean IPKG version)
+	local tun
+	tun=$(uci get accelerator.base.tun 2>/dev/null)
+	if [ "$tun" = "1" ]; then
+		echo "tun"
+		return
+	elif [ "$tun" = "0" ]; then
+		echo "tproxy"
+		return
+	fi
+
+	# 4. Check /etc/init.d/acc for legacy --mode tun
+	if [ -f "/etc/init.d/acc" ] && grep -q -- "--mode tun" /etc/init.d/acc 2>/dev/null; then
+		echo "tun"
+		return
+	fi
+
+	# 5. Check leigod-manager UCI
+	local lm
+	lm=$(uci get leigod-manager.base.mode 2>/dev/null)
+	[ "$lm" = "tun" ] && { echo "tun"; return; }
+
+	echo "tproxy"
+}
+
+_apply_mode() {
+	local mode="$1"
+	[ -z "$mode" ] && return
+
+	# 1. Update /etc/config/acc_firewall.ini
+	# CRITICAL NOTE: In acc-gw.router, TUN mode ONLY supports backend=iptables!
+	# Setting backend=nftables in TUN mode causes add_direct_target to call
+	# NftableMgr on non-existent tproxy_table, aborting with 'add acc device failed.'
+	local fw backend tproxy_ip
+	fw=$(_detect_fw)
+	tproxy_ip="10.20.30.40"
+	if [ "$mode" = "tun" ]; then
+		backend="iptables"
+	else
+		[ "$fw" = "fw4" ] && backend="nftables" || backend="iptables"
+	fi
+
+	if [ -f "$FIREWALL_INI" ]; then
+		if grep -q "^mode=" "$FIREWALL_INI" 2>/dev/null; then
+			sed -i "s/^mode=.*/mode=${mode}/" "$FIREWALL_INI"
+		else
+			echo "mode=${mode}" >> "$FIREWALL_INI"
+		fi
+		if grep -q "^backend=" "$FIREWALL_INI" 2>/dev/null; then
+			sed -i "s/^backend=.*/backend=${backend}/" "$FIREWALL_INI"
+		else
+			echo "backend=${backend}" >> "$FIREWALL_INI"
+		fi
+		if grep -q "^tproxy_ip=" "$FIREWALL_INI" 2>/dev/null; then
+			sed -i "s/^tproxy_ip=.*/tproxy_ip=${tproxy_ip}/" "$FIREWALL_INI"
+		else
+			echo "tproxy_ip=${tproxy_ip}" >> "$FIREWALL_INI"
+		fi
+	else
+		mkdir -p "$(dirname "$FIREWALL_INI")"
+		cat > "$FIREWALL_INI" <<EOF
+[firewall]
+backend=${backend}
+mode=${mode}
+tproxy_ip=${tproxy_ip}
+EOF
+	fi
+
+	# 2. Update UCI accelerator (Lean IPKG)
+	if uci get accelerator.base >/dev/null 2>&1; then
+		[ "$mode" = "tun" ] && uci set accelerator.base.tun='1' || uci set accelerator.base.tun='0'
+		uci commit accelerator 2>/dev/null || true
+	fi
+
+	# 3. Update UCI leigod-manager
+	uci set leigod-manager.base.mode="$mode"
+	uci commit leigod-manager 2>/dev/null || true
+
+	# 4. Ensure legacy procd acc init is disabled
+	if [ -f "/etc/init.d/acc" ]; then
+		/etc/init.d/acc disable >/dev/null 2>&1 || true
+	fi
+
+	# 5. Load modules and verify device
+	if [ "$mode" = "tun" ]; then
+		_prepare_tun_env >/dev/null 2>&1 || true
+	else
+		_ensure_modules_loaded "$mode"
+	fi
+}
+
+_get_version() {
+	local ver=""
+	ver=$(_read_ini_field version "$VERSION_INI")
+	if [ -z "$ver" ] && [ -f "${SBIN_DIR}/version" ]; then
+		ver=$(cat "${SBIN_DIR}/version" 2>/dev/null | tr -d ' \r\n')
+	fi
+	if [ -z "$ver" ]; then
+		local arch bin
+		arch=$(get_arch)
+		bin="${SBIN_DIR}/${BINARY_PREFIX}.${arch}"
+		if [ -x "$bin" ]; then
+			ver=$("$bin" -v 2>/dev/null | awk '{print $NF}' | head -n1)
+		fi
+	fi
+	if [ -z "$ver" ]; then
+		ver=$(opkg info leigod-acc 2>/dev/null | awk '/^Version:/{print $2; exit}')
+	fi
+	[ -n "$ver" ] && echo "$ver" || echo "running"
+}
+
+# ---- RPC methods ------------------------------------------------------------
+
+do_get_status() {
+	local installed running monitor_running mode version fw tproxy_compat uptime_str
+	_is_installed && installed="true" || installed="false"
+	_is_running   && running="true"   || running="false"
+	_is_monitor_running && monitor_running="true" || monitor_running="false"
+	mode=$(_get_mode)
+	version=$(_get_version)
+	fw=$(_detect_fw)
+	tproxy_compat=$(_tproxy_compat)
+
+	uptime_str=""
+	if _is_running; then
+		local pid start_time
+		pid=$(_get_daemon_pid)
+		if [ -n "$pid" ]; then
+			start_time=$(cat /proc/"$pid"/stat 2>/dev/null | awk '{print $22}')
+			if [ -n "$start_time" ]; then
+				local hz sys_uptime elapsed h m s
+				hz=$(getconf CLK_TCK 2>/dev/null || echo 100)
+				sys_uptime=$(awk '{print int($1)}' /proc/uptime 2>/dev/null || echo 0)
+				elapsed=$((sys_uptime - start_time / hz))
+				[ "$elapsed" -lt 0 ] && elapsed=0
+				h=$((elapsed / 3600))
+				m=$(((elapsed % 3600) / 60))
+				s=$((elapsed % 60))
+				uptime_str=$(printf "%02d:%02d:%02d" "$h" "$m" "$s")
+			fi
+		fi
+	fi
+
+	printf '{"installed":%s,"running":%s,"monitor_running":%s,"mode":"%s","version":"%s","fw":"%s","tproxy_compat":"%s","uptime":"%s"}\n' \
+		"$installed" "$running" "$monitor_running" "$mode" "$version" "$fw" "$tproxy_compat" "$uptime_str"
+}
+
+do_start() {
+	local mode
+	mode=$(_get_mode)
+
+	if [ "$mode" = "tun" ]; then
+		local prep_err
+		prep_err=$(_prepare_tun_env)
+		if [ $? -ne 0 ]; then
+			printf '{"code":1,"message":"%s"}\n' "$prep_err"
+			return
+		fi
+	else
+		_ensure_modules_loaded "$mode"
+	fi
+
+	# Always ensure acc_firewall.ini has correct backend and mode before starting
+	_apply_mode "$mode"
+
+	# Start official monitor.sh to supervise accelerator and pull up daemon
+	_start_monitor
+
+	# Fast-poll up to 6 seconds (checking every 500ms) until daemon is confirmed running
+	local waited=0
+	while [ "$waited" -lt 12 ]; do
+		_is_running && break
+		sleep 0.5 2>/dev/null || sleep 1
+		waited=$((waited + 1))
+	done
+
+	if _is_running; then
+		printf '{"code":0,"message":"started"}\n'
+	else
+		local err
+		err=$(_get_last_error)
+		[ -z "$err" ] && err="服务启动超时或失败"
+		printf '{"code":1,"message":"%s"}\n' "$err"
+	fi
+}
+
+do_stop() {
+	# 1. Stop monitor supervisor first so it does not resurrect killed processes
+	_stop_monitor
+
+	# 2. Disable legacy procd service if present
+	if [ -f "/etc/init.d/acc" ]; then
+		/etc/init.d/acc stop >/dev/null 2>&1 || true
+		/etc/init.d/acc disable >/dev/null 2>&1 || true
+	fi
+
+	# 3. Clean rules, gracefully kill processes (SIGUSR1 then SIGKILL), clean rules again
+	_clean_rules
+	_kill_acc
+	_clean_rules
+
+	sleep 1
+	_is_running && printf '{"code":1,"message":"failed to stop"}\n' || printf '{"code":0,"message":"stopped"}\n'
+}
+
+do_restart() {
+	do_stop >/dev/null 2>&1
+	sleep 1
+	do_start
+}
+
+do_set_mode() {
+	local input mode
+	input=$(cat)
+	mode=$(echo "$input" | jsonfilter -e '@.mode' 2>/dev/null)
+
+	# Toggle if mode is empty or "switch"
+	if [ -z "$mode" ] || [ "$mode" = "switch" ]; then
+		local cur
+		cur=$(_get_mode)
+		[ "$cur" = "tun" ] && mode="tproxy" || mode="tun"
+	fi
+
+	case "$mode" in
+		tun|tproxy)
+			if [ "$mode" = "tun" ]; then
+				local prep_err
+				prep_err=$(_prepare_tun_env)
+				if [ $? -ne 0 ]; then
+					printf '{"code":1,"message":"%s"}\n' "$prep_err"
+					return
+				fi
+			fi
+
+			# 1. Stop monitor supervisor
+			_stop_monitor
+
+			# 2. Kill current daemon and clean old mode rules
+			_kill_acc
+			_clean_rules
+
+			# 3. Apply new mode to acc_firewall.ini and UCI
+			_apply_mode "$mode"
+
+			# 4. Start official monitor with the new mode
+			_start_monitor
+
+			# 5. Fast-poll until daemon is confirmed running
+			local waited=0
+			while [ "$waited" -lt 12 ]; do
+				_is_running && break
+				sleep 0.5 2>/dev/null || sleep 1
+				waited=$((waited + 1))
+			done
+
+			if _is_running; then
+				printf '{"code":0,"message":"mode set to %s"}\n' "$mode"
+			else
+				local last_err
+				last_err=$(_get_last_error)
+				[ -z "$last_err" ] && last_err="${mode} 模式启动超时或失败"
+				printf '{"code":1,"message":"%s"}\n' "$last_err"
+			fi
+			;;
+		*)
+			printf '{"code":1,"message":"invalid mode, use tun or tproxy"}\n'
+			;;
+	esac
+}
+
+do_get_logs() {
+	local input lines
+	input=$(cat)
+	lines=$(echo "$input" | jsonfilter -e '@.lines' 2>/dev/null)
+	[ -z "$lines" ] || [ "$lines" -le 0 ] 2>/dev/null && lines=100
+
+	local log_content=""
+	local candidate
+	# Priority list of log sources
+	for candidate in \
+		"${ACC_LOG}" \
+		"${MONITOR_LOG}" \
+		"${SBIN_DIR}/acc_daemon.out" \
+		"${SBIN_DIR}/acc_upgrade_monitor.out" \
+		"${UNINSTALL_LOG}" \
+		/tmp/acc/*.log; do
+		if [ -f "$candidate" ] && [ -s "$candidate" ]; then
+			log_content=$(tail -n "$lines" "$candidate" | sed 's/\\/\\\\/g; s/"/\\"/g; s/$/\\n/g' | tr -d '\n')
+			break
+		fi
+	done
+
+	[ -z "$log_content" ] && log_content="(no active logs found in /tmp or /usr/sbin/leigod)"
+
+	local sys_log=""
+	sys_log=$(logread 2>/dev/null | grep -iE "leigod|acc-gw|GAMEACC" | tail -n 50 | sed 's/\\/\\\\/g; s/"/\\"/g; s/$/\\n/g' | tr -d '\n')
+
+	printf '{"lines":%d,"content":"%s","syslog":"%s"}' "$lines" "$log_content" "$sys_log"
+}
+
+do_install() {
+	local result code
+	if [ -x "${SBIN_DIR}/acc-gw.router.$(get_arch)" ]; then
+		# Already installed, repair init script and config
+		_ensure_init_script >/dev/null 2>&1
+		_apply_mode "$(_get_mode)"
+		printf '{"code":0,"message":"leigod already installed in /usr/sbin/leigod"}\n'
+		return
+	fi
+
+	# Run official install script
+	result=$(cd /tmp && sh -c "$(curl -fsSL http://119.3.40.126/router_plugin_new/plugin_install.sh)" 2>&1)
+	code=$?
+	result=$(echo "$result" | tail -n 15 | sed 's/\\/\\\\/g; s/"/\\"/g; s/$/\\n/g' | tr -d '\n')
+	printf '{"code":%d,"message":"%s"}\n' "$code" "$result"
+}
+
+do_uninstall() {
+	local result code
+	if [ -x "${SBIN_DIR}/leigod_uninstall.sh" ]; then
+		result=$(sh "${SBIN_DIR}/leigod_uninstall.sh" 2>&1)
+		code=$?
+	else
+		do_stop >/dev/null 2>&1
+		_clean_rules
+		rm -f /etc/init.d/acc
+		rm -rf "${SBIN_DIR}"
+		rm -f /etc/config/accelerator.ini "$FIREWALL_INI" "$VERSION_INI" \
+		      /etc/config/acc_core_conf.json /etc/config/ipdatacloud_country.xdb
+		code=0
+		result="uninstalled"
+	fi
+	result=$(echo "$result" | sed 's/\\/\\\\/g; s/"/\\"/g; s/$/\\n/g' | tr -d '\n')
+	printf '{"code":%d,"message":"%s"}\n' "$code" "$result"
+}
+
+do_get_config() {
+	local enabled mode log_level
+	enabled=$(uci get leigod-manager.base.enabled 2>/dev/null || echo "1")
+	mode=$(_get_mode)
+	log_level=$(uci get leigod-manager.base.log_level 2>/dev/null || echo "info")
+
+	printf '{"enabled":%s,"mode":"%s","log_level":"%s"}' \
+		"$(_json_bool "$enabled")" "$mode" "$log_level"
+}
+
+do_set_config() {
+	local input enabled mode log_level
+	input=$(cat)
+
+	enabled=$(echo "$input" | jsonfilter -e '@.enabled' 2>/dev/null)
+	mode=$(echo "$input" | jsonfilter -e '@.mode' 2>/dev/null)
+	log_level=$(echo "$input" | jsonfilter -e '@.log_level' 2>/dev/null)
+
+	local init
+	init=$(_ensure_init_script)
+
+	[ -n "$mode" ] && _apply_mode "$mode"
+
+	[ -n "$enabled" ] && {
+		[ "$enabled" = "true" ] && enabled="1" || enabled="0"
+		uci set leigod-manager.base.enabled="$enabled"
+		if [ -n "$init" ]; then
+			[ "$enabled" = "1" ] && "$init" enable 2>/dev/null || "$init" disable 2>/dev/null
+		fi
+	}
+
+	[ -n "$log_level" ] && uci set leigod-manager.base.log_level="$log_level"
+
+	uci commit leigod-manager 2>/dev/null || true
+
+	# Apply changes: if enabled=0 stop service, else restart to apply new mode
+	if [ "$enabled" = "0" ]; then
+		do_stop >/dev/null 2>&1
+		printf '{"code":0,"message":"config saved and service stopped"}\n'
+	else
+		if [ "$mode" = "tun" ]; then
+			local prep_err
+			prep_err=$(_prepare_tun_env)
+			if [ $? -ne 0 ]; then
+				printf '{"code":1,"message":"%s"}\n' "$prep_err"
+				return
+			fi
+		fi
+		do_restart >/dev/null 2>&1
+		if _is_running; then
+			printf '{"code":0,"message":"config saved and service restarted"}\n'
+		else
+			local last_err
+			last_err=$(_get_last_error)
+			[ -z "$last_err" ] && last_err="服务重启失败"
+			printf '{"code":1,"message":"config saved but %s"}\n' "$last_err"
+		fi
+	fi
+}
+
+# ---- dispatch ---------------------------------------------------------------
+
+case "$1" in
+	list)
+		printf '{"get_status":{},"start":{},"stop":{},"restart":{},"set_mode":{"mode":"String"},"get_logs":{"lines":"Number"},"install":{},"uninstall":{},"get_config":{},"set_config":{"enabled":"Boolean","mode":"String","log_level":"String"}}\n'
+		;;
+	call)
+		case "$2" in
+			get_status) do_get_status ;;
+			start)      do_start ;;
+			stop)       do_stop ;;
+			restart)    do_restart ;;
+			set_mode)   do_set_mode ;;
+			get_logs)   do_get_logs ;;
+			install)    do_install ;;
+			uninstall)  do_uninstall ;;
+			get_config) do_get_config ;;
+			set_config) do_set_config ;;
+			*)
+				printf '{"code":1,"message":"unknown method: %s"}\n' "$2"
+				exit 1
+				;;
+		esac
+		;;
+	*)
+		exit 1
+		;;
+esac
