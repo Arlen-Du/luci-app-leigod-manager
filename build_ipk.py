@@ -21,13 +21,44 @@ import os
 import sys
 import tarfile
 
-PKG_NAME = "luci-app-leigod-manager"
-PKG_VERSION = "1.0.0"
-PKG_ARCH = "all"
-PKG_DEPENDS = "luci-base"
-PKG_DESCRIPTION = "LuCI support for Leigod Accelerator Manager (fw4/nftables compatible)"
-PKG_MAINTAINER = "Arlen Du"
-PKG_LICENSE = "GPL-2.0-only"
+def parse_makefile(makefile_path: str = None) -> dict:
+    if makefile_path is None:
+        makefile_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Makefile")
+    meta = {}
+    if not os.path.isfile(makefile_path):
+        return meta
+    with open(makefile_path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if ":=" in line:
+                k, v = line.split(":=", 1)
+                meta[k.strip()] = v.strip()
+            elif "=" in line:
+                k, v = line.split("=", 1)
+                meta[k.strip()] = v.strip()
+    return meta
+
+
+_meta = parse_makefile()
+
+PKG_NAME = _meta.get("PKG_NAME", "luci-app-leigod-manager")
+PKG_VERSION = _meta.get("PKG_VERSION", "1.0.1")
+PKG_RELEASE = _meta.get("PKG_RELEASE", "1")
+PKG_ARCH = _meta.get("LUCI_PKGARCH", "all")
+PKG_DESCRIPTION = _meta.get("LUCI_TITLE", "LuCI support for Leigod Accelerator Manager (fw4/nftables compatible)")
+PKG_MAINTAINER = _meta.get("PKG_MAINTAINER", "Arlen Du")
+PKG_LICENSE = _meta.get("PKG_LICENSE", "GPL-2.0-only")
+
+# Parse depends from Makefile: "+leigod-acc" -> "luci-base, leigod-acc"
+_raw_deps = _meta.get("LUCI_DEPENDS", "")
+_dep_list = ["luci-base"]
+for _d in _raw_deps.split():
+    _d = _d.lstrip("+").strip()
+    if _d and _d not in _dep_list:
+        _dep_list.append(_d)
+PKG_DEPENDS = ", ".join(_dep_list)
 
 
 def add_file_to_tar(tf: tarfile.TarFile, arcname: str, content: bytes, mode: int = 0o644, mtime: int = 0):

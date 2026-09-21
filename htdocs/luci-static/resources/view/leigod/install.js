@@ -66,16 +66,118 @@ return view.extend({
 		var fw         = status.fw || 'unknown';
 		var version    = status.version || '';
 
+		// Theme detection helper
+		try {
+			var isDark = false;
+			var root = document.documentElement;
+			var body = document.body;
+			if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) isDark = true;
+			if (root && (root.getAttribute('data-theme') === 'dark' || root.getAttribute('data-darkmode') === 'true' || root.classList.contains('dark') || root.classList.contains('dark-mode'))) isDark = true;
+			if (body && (body.getAttribute('data-theme') === 'dark' || body.getAttribute('data-darkmode') === 'true' || body.classList.contains('dark') || body.classList.contains('dark-mode'))) isDark = true;
+			if (root && (root.getAttribute('data-theme') === 'light' || root.getAttribute('data-darkmode') === 'false' || root.classList.contains('light'))) isDark = false;
+			if (body && (body.getAttribute('data-theme') === 'light' || body.getAttribute('data-darkmode') === 'false' || body.classList.contains('light'))) isDark = false;
+			var links = document.querySelectorAll('link[rel="stylesheet"]');
+			for (var li = 0; li < links.length; li++) {
+				if (links[li].href && links[li].href.indexOf('dark.css') !== -1) { isDark = true; break; }
+			}
+			if (!isDark && body) {
+				var bg = window.getComputedStyle(body).backgroundColor;
+				var rgb = bg ? bg.match(/\d+/g) : null;
+				if (rgb && rgb.length >= 3) {
+					var brightness = (parseInt(rgb[0]) * 299 + parseInt(rgb[1]) * 587 + parseInt(rgb[2]) * 114) / 1000;
+					if (brightness < 128) isDark = true;
+				}
+			}
+			if (isDark) { if (root) root.classList.add('lg-dark'); }
+			else { if (root) root.classList.remove('lg-dark'); }
+		} catch (e) {}
+
 		var style = E('style', {}, [`
-			.lg-card { background: var(--cbi-section-bg,#fff); border: 1px solid var(--cbi-section-border,#ddd); border-radius: 8px; padding: 20px 24px; margin-bottom: 20px; }
-			.lg-card h3 { margin: 0 0 16px; font-size: 1rem; color: var(--cbi-label-color,#333); border-bottom: 1px solid var(--cbi-section-border,#eee); padding-bottom: 8px; }
+			:root {
+				--lg-bg-card: #ffffff;
+				--lg-border-card: #e5e7eb;
+				--lg-shadow-card: 0 1px 3px rgba(0, 0, 0, 0.05);
+				--lg-border-subtle: #f3f4f6;
+				--lg-border-divider: #e5e7eb;
+				--lg-bg-subtle: #f9fafb;
+				--lg-bg-hover: #f3f4f6;
+				--lg-text-primary: #1f2937;
+				--lg-text-secondary: #4b5563;
+				--lg-text-muted: #6b7280;
+				--lg-badge-ok-bg: #d1fae5;
+				--lg-badge-ok-text: #065f46;
+				--lg-badge-warn-bg: #fee2e2;
+				--lg-badge-warn-text: #991b1b;
+				--lg-badge-info-bg: #dbeafe;
+				--lg-badge-info-text: #1e40af;
+			}
+			@media (prefers-color-scheme: dark) {
+				:root {
+					--lg-bg-card: #22272e;
+					--lg-border-card: #373e47;
+					--lg-shadow-card: 0 2px 6px rgba(0, 0, 0, 0.3);
+					--lg-border-subtle: #2d333b;
+					--lg-border-divider: #373e47;
+					--lg-bg-subtle: #1c2128;
+					--lg-bg-hover: #2d333b;
+					--lg-text-primary: #adbac7;
+					--lg-text-secondary: #909dab;
+					--lg-text-muted: #768390;
+					--lg-badge-ok-bg: rgba(46, 160, 67, 0.2);
+					--lg-badge-ok-text: #56d364;
+					--lg-badge-warn-bg: rgba(248, 81, 73, 0.2);
+					--lg-badge-warn-text: #ff7b72;
+					--lg-badge-info-bg: rgba(56, 139, 253, 0.2);
+					--lg-badge-info-text: #79c0ff;
+				}
+			}
+			[data-theme="dark"], [data-theme="dark-mode"], [data-darkmode="true"], [data-color-scheme="dark"],
+			.dark, .dark-mode, body.dark, html.dark, .lg-dark {
+				--lg-bg-card: #22272e;
+				--lg-border-card: #373e47;
+				--lg-shadow-card: 0 2px 6px rgba(0, 0, 0, 0.3);
+				--lg-border-subtle: #2d333b;
+				--lg-border-divider: #373e47;
+				--lg-bg-subtle: #1c2128;
+				--lg-bg-hover: #2d333b;
+				--lg-text-primary: #adbac7;
+				--lg-text-secondary: #909dab;
+				--lg-text-muted: #768390;
+				--lg-badge-ok-bg: rgba(46, 160, 67, 0.2);
+				--lg-badge-ok-text: #56d364;
+				--lg-badge-warn-bg: rgba(248, 81, 73, 0.2);
+				--lg-badge-warn-text: #ff7b72;
+				--lg-badge-info-bg: rgba(56, 139, 253, 0.2);
+				--lg-badge-info-text: #79c0ff;
+			}
+			[data-theme="light"], [data-color-scheme="light"], body.light, html.light {
+				--lg-bg-card: #ffffff;
+				--lg-border-card: #e5e7eb;
+				--lg-shadow-card: 0 1px 3px rgba(0, 0, 0, 0.05);
+				--lg-border-subtle: #f3f4f6;
+				--lg-border-divider: #e5e7eb;
+				--lg-bg-subtle: #f9fafb;
+				--lg-bg-hover: #f3f4f6;
+				--lg-text-primary: #1f2937;
+				--lg-text-secondary: #4b5563;
+				--lg-text-muted: #6b7280;
+				--lg-badge-ok-bg: #d1fae5;
+				--lg-badge-ok-text: #065f46;
+				--lg-badge-warn-bg: #fee2e2;
+				--lg-badge-warn-text: #991b1b;
+				--lg-badge-info-bg: #dbeafe;
+				--lg-badge-info-text: #1e40af;
+			}
+
+			.lg-card { background: var(--lg-bg-card); border: 1px solid var(--lg-border-card); border-radius: 8px; padding: 20px 24px; margin-bottom: 20px; box-shadow: var(--lg-shadow-card); transition: background .2s, border-color .2s; }
+			.lg-card h3 { margin: 0 0 16px; font-size: 1rem; color: var(--lg-text-primary); border-bottom: 1px solid var(--lg-border-divider); padding-bottom: 8px; }
 			.lg-info-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 24px; margin-bottom: 20px; }
-			.lg-info-item strong { display: block; font-size: .78rem; text-transform: uppercase; color: var(--cbi-label-color,#888); letter-spacing: .05em; margin-bottom: 2px; }
-			.lg-info-item span { font-size: .95rem; font-weight: 600; color: var(--cbi-value-color,#222); }
+			.lg-info-item strong { display: block; font-size: .78rem; text-transform: uppercase; color: var(--lg-text-muted); letter-spacing: .05em; margin-bottom: 2px; }
+			.lg-info-item span { font-size: .95rem; font-weight: 600; color: var(--lg-text-primary); }
 			.lg-badge { display: inline-block; padding: 2px 10px; border-radius: 12px; font-size: .8rem; font-weight: 600; }
-			.lg-badge-ok   { background: #d1fae5; color: #065f46; }
-			.lg-badge-warn { background: #fee2e2; color: #991b1b; }
-			.lg-badge-info { background: #e0f2fe; color: #0369a1; }
+			.lg-badge-ok   { background: var(--lg-badge-ok-bg); color: var(--lg-badge-ok-text); }
+			.lg-badge-warn { background: var(--lg-badge-warn-bg); color: var(--lg-badge-warn-text); }
+			.lg-badge-info { background: var(--lg-badge-info-bg); color: var(--lg-badge-info-text); }
 			.lg-btn-group { display: flex; gap: 12px; flex-wrap: wrap; }
 			.lg-btn { padding: 9px 22px; border-radius: 6px; border: none; cursor: pointer; font-size: .9rem; font-weight: 600; transition: opacity .15s; }
 			.lg-btn:disabled { opacity: .4; cursor: not-allowed; }
@@ -85,17 +187,17 @@ return view.extend({
 			.lg-btn-gray  { background: #6b7280; color: #fff; }
 			.lg-btn:not(:disabled):hover { opacity: .85; }
 
-			.lg-sec-header { display: flex; justify-content: space-between; align-items: center; margin-top: 24px; margin-bottom: 12px; flex-wrap: wrap; gap: 12px; padding-bottom: 8px; border-bottom: 1px dashed var(--cbi-section-border,#e5e7eb); }
-			.lg-sec-title { font-size: .96rem; font-weight: 700; color: var(--cbi-value-color,#1f2937); display: flex; align-items: center; gap: 8px; }
+			.lg-sec-header { display: flex; justify-content: space-between; align-items: center; margin-top: 24px; margin-bottom: 12px; flex-wrap: wrap; gap: 12px; padding-bottom: 8px; border-bottom: 1px dashed var(--lg-border-divider); }
+			.lg-sec-title { font-size: .96rem; font-weight: 700; color: var(--lg-text-primary); display: flex; align-items: center; gap: 8px; }
 			.lg-table { width: 100%; border-collapse: collapse; margin-bottom: 16px; font-size: .88rem; }
-			.lg-table th { background: var(--cbi-section-border,#f9fafb); padding: 10px 12px; text-align: left; font-weight: 600; color: var(--cbi-label-color,#4b5563); border-bottom: 2px solid var(--cbi-section-border,#e5e7eb); }
-			.lg-table td { padding: 9px 12px; border-bottom: 1px solid var(--cbi-section-border,#f3f4f6); vertical-align: middle; }
-			.lg-table tr:hover { background: var(--cbi-section-border,#fbfcfd); }
+			.lg-table th { background: var(--lg-bg-subtle); padding: 10px 12px; text-align: left; font-weight: 600; color: var(--lg-text-secondary); border-bottom: 2px solid var(--lg-border-divider); }
+			.lg-table td { padding: 9px 12px; border-bottom: 1px solid var(--lg-border-subtle); vertical-align: middle; color: var(--lg-text-primary); }
+			.lg-table tr:hover { background: var(--lg-bg-hover); }
 			.lg-btn-sm { padding: 4px 10px; font-size: .78rem; border-radius: 4px; border: none; cursor: pointer; font-weight: 600; transition: opacity .15s; margin-right: 6px; }
 			.lg-btn-sm:disabled { opacity: .4; cursor: not-allowed; }
 			.lg-btn-sm:not(:disabled):hover { opacity: .85; }
 
-			.lg-log-output { background: #111; color: #d1fae5; font-family: monospace; font-size: .83rem; border-radius: 6px; padding: 14px; max-height: 260px; overflow-y: auto; white-space: pre-wrap; word-break: break-all; margin-top: 14px; display: none; }
+			.lg-log-output { background: #0d1117; color: #d1fae5; font-family: monospace; font-size: .83rem; border: 1px solid var(--lg-border-divider); border-radius: 6px; padding: 14px; max-height: 260px; overflow-y: auto; white-space: pre-wrap; word-break: break-all; margin-top: 14px; display: none; }
 			.lg-spinner { display: inline-block; width: 13px; height: 13px; border: 2px solid rgba(255,255,255,.4); border-top-color: #fff; border-radius: 50%; animation: lg-spin .6s linear infinite; vertical-align: middle; margin-right: 5px; }
 			@keyframes lg-spin { to { transform: rotate(360deg); } }
 		`]);
@@ -309,7 +411,7 @@ return view.extend({
 
 				return E('tr', {}, [
 					E('td', { 'style': 'font-weight:600;font-family:monospace;' }, [pkgItem.name]),
-					E('td', { 'style': 'color:var(--cbi-label-color,#666);' }, [meta.desc]),
+					E('td', { 'style': 'color:var(--lg-text-muted);' }, [meta.desc]),
 					E('td', {}, [statusBadge]),
 					E('td', { 'style': 'white-space:nowrap;' }, [
 						btnSingleInstall,
@@ -395,7 +497,7 @@ return view.extend({
 						_('包管理器: ') + pkgMgrName
 					])
 				]),
-				E('p', { 'style': 'font-size:.88rem;color:var(--cbi-label-color,#666);margin:0 0 16px;line-height:1.5;' }, [
+				E('p', { 'style': 'font-size:.88rem;color:var(--lg-text-muted);margin:0 0 16px;line-height:1.5;' }, [
 					_('集中管理雷神加速器在 TUN 模式与 TProxy 模式下所需的内核模块与系统依赖包（支持 opkg 与 apk）。支持一键批量安装/重新安装/卸载，也可针对特定单个组件进行精准维护。')
 				]),
 				tunSection,

@@ -26,14 +26,47 @@ import sys
 import tarfile
 import time
 
-# ── Package metadata ──────────────────────────────────────────────────────────
-PKG_NAME = "luci-app-leigod-manager"
-PKG_DESC = "LuCI support for Leigod Accelerator Manager (fw4/nftables compatible)"
-PKG_URL  = "https://github.com/ArlenDu/luci-leigod-manager"
-PKG_MAINTAINER = "Arlen Du"
-PKG_DEPS = [
-    "luci-base",
-]
+# ── Package metadata (parsed from Makefile) ───────────────────────────────────
+
+def parse_makefile(makefile_path: str = None) -> dict:
+    if makefile_path is None:
+        makefile_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Makefile")
+    meta = {}
+    if not os.path.isfile(makefile_path):
+        return meta
+    with open(makefile_path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if ":=" in line:
+                k, v = line.split(":=", 1)
+                meta[k.strip()] = v.strip()
+            elif "=" in line:
+                k, v = line.split("=", 1)
+                meta[k.strip()] = v.strip()
+    return meta
+
+
+_meta = parse_makefile()
+
+PKG_NAME       = _meta.get("PKG_NAME", "luci-app-leigod-manager")
+PKG_VERSION    = _meta.get("PKG_VERSION", "1.0.1")
+PKG_RELEASE    = _meta.get("PKG_RELEASE", "1")
+PKG_ARCH       = "noarch" if _meta.get("LUCI_PKGARCH", "all") == "all" else _meta.get("LUCI_PKGARCH", "noarch")
+PKG_DESC       = _meta.get("LUCI_TITLE", "LuCI support for Leigod Accelerator Manager (fw4/nftables compatible)")
+PKG_URL        = "https://github.com/ArlenDu/luci-leigod-manager"
+PKG_MAINTAINER = _meta.get("PKG_MAINTAINER", "Arlen Du")
+PKG_LICENSE    = _meta.get("PKG_LICENSE", "GPL-2.0-only")
+
+# Parse depends from Makefile: "+leigod-acc" -> ["luci-base", "leigod-acc"]
+_raw_deps = _meta.get("LUCI_DEPENDS", "")
+_dep_list = ["luci-base"]
+for _d in _raw_deps.split():
+    _d = _d.lstrip("+").strip()
+    if _d and _d not in _dep_list:
+        _dep_list.append(_d)
+PKG_DEPS = _dep_list
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -121,15 +154,16 @@ def make_control_gz_bytes(build_tar_fn) -> bytes:
 
 def main():
     parser = argparse.ArgumentParser(description="Build APK v2 package")
-    parser.add_argument("--version", default="1.0.0",   help="Package version (default: 1.0.0)")
-    parser.add_argument("--arch",    default="noarch",  help="Package arch (default: noarch)")
-    parser.add_argument("--output",  default="dist",    help="Output directory (default: dist)")
+    parser.add_argument("--version", default=PKG_VERSION, help=f"Package version (default: {PKG_VERSION})")
+    parser.add_argument("--arch",    default=PKG_ARCH,    help=f"Package arch (default: {PKG_ARCH})")
+    parser.add_argument("--output",  default="dist",       help="Output directory (default: dist)")
     args = parser.parse_args()
 
     # In apk-tools, architecture-independent packages MUST use 'noarch', not 'all'
     target_arch = "noarch" if args.arch == "all" else args.arch
 
-    pkg_ver  = f"{args.version}-r0"
+    rel_num = int(PKG_RELEASE) - 1 if PKG_RELEASE.isdigit() and int(PKG_RELEASE) > 0 else 0
+    pkg_ver  = f"{args.version}-r{rel_num}" if "-r" not in args.version else args.version
     src_root = os.path.dirname(os.path.abspath(__file__))
     out_dir  = os.path.join(src_root, args.output)
     os.makedirs(out_dir, exist_ok=True)

@@ -900,15 +900,58 @@ do_get_logs() {
 		"${UNINSTALL_LOG}" \
 		/tmp/acc/*.log; do
 		if [ -f "$candidate" ] && [ -s "$candidate" ]; then
-			log_content=$(tail -n "$lines" "$candidate" | sed 's/\\/\\\\/g; s/"/\\"/g; s/$/\\n/g' | tr -d '\n')
+			log_content=$(tail -n "$lines" "$candidate" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e 's/\r//g' -e 's/$/\\n/g' | tr -d '\n')
 			break
 		fi
 	done
 
-	[ -z "$log_content" ] && log_content="(no active logs found in /tmp or /usr/sbin/leigod)"
+	[ -z "$log_content" ] && log_content="(暂未在 /tmp 或 /usr/sbin/leigod 检测到活跃的服务日志)"
+
+	# 系统日志 (Syslog / dmesg) 综合采集
+	local sys_raw=""
+	# 1. 首选 logread
+	if command -v logread >/dev/null 2>&1; then
+		sys_raw=$(logread 2>/dev/null)
+	fi
+
+	# 2. 若 logread 无输出，尝试系统日志文件
+	if [ -z "$sys_raw" ]; then
+		for f in /var/log/messages /tmp/messages /var/log/syslog; do
+			if [ -f "$f" ] && [ -s "$f" ]; then
+				sys_raw=$(cat "$f" 2>/dev/null)
+				break
+			fi
+		done
+	fi
+
+	local sys_filtered=""
+	# 匹配 leigod-acc 服务、acc 守护进程、网卡事件及防火墙规则
+	if [ -n "$sys_raw" ]; then
+		sys_filtered=$(echo "$sys_raw" | grep -iE "leigod|acc[-_.:/ ]|GAMEACC|tproxy_table|acc-gw|\bacc\b" | tail -n "$lines")
+	fi
+
+	# 3. 若 syslog 暂未记录到关键词，尝试读取内核 dmesg 关联信息
+	if [ -z "$sys_filtered" ]; then
+		local dmesg_match=""
+		dmesg_match=$(dmesg 2>/dev/null | grep -iE "leigod|acc[-_.:/ ]|GAMEACC|tun_[a-zA-Z0-9_-]+" | tail -n 30)
+		if [ -n "$dmesg_match" ]; then
+			sys_filtered="[内核 dmesg 关联信息]\n${dmesg_match}"
+		fi
+	fi
+
+	# 4. 若依然无匹配结果，提供友好提示及系统最新日志概览，避免空白
+	if [ -z "$sys_filtered" ]; then
+		if [ -n "$sys_raw" ]; then
+			local sys_tail
+			sys_tail=$(echo "$sys_raw" | tail -n 20)
+			sys_filtered="[提示: 系统日志中暂未检测到雷神(leigod/acc)特征记录，附最新系统日志供参考]\n${sys_tail}"
+		else
+			sys_filtered="(系统日志服务未运行或系统当前暂无日志记录)"
+		fi
+	fi
 
 	local sys_log=""
-	sys_log=$(logread 2>/dev/null | grep -iE "leigod|acc-gw|GAMEACC" | tail -n 50 | sed 's/\\/\\\\/g; s/"/\\"/g; s/$/\\n/g' | tr -d '\n')
+	sys_log=$(echo "$sys_filtered" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e 's/\r//g' -e 's/$/\\n/g' | tr -d '\n')
 
 	printf '{"lines":%d,"content":"%s","syslog":"%s"}' "$lines" "$log_content" "$sys_log"
 }

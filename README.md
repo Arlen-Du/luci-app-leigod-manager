@@ -58,20 +58,20 @@
 
 ```sh
 # 上传到路由器
-scp luci-app-leigod-manager_1.0.0_noarch.apk root@<路由器IP>:/tmp/
+scp luci-app-leigod-manager_1.0.1_noarch.apk root@<路由器IP>:/tmp/
 
 # 通过 apk 安装
-ssh root@<路由器IP> 'apk add --allow-untrusted /tmp/luci-app-leigod-manager_1.0.0_noarch.apk'
+ssh root@<路由器IP> 'apk add --allow-untrusted /tmp/luci-app-leigod-manager_1.0.1_noarch.apk'
 ```
 
 ### 2. OpenWrt <= 23.05 / iStoreOS / ImmortalWrt (OPKG 包管理器)
 
 ```sh
 # 上传到路由器
-scp luci-app-leigod-manager_1.0.0_all.ipk root@<路由器IP>:/tmp/
+scp luci-app-leigod-manager_1.0.1_all.ipk root@<路由器IP>:/tmp/
 
 # 通过 opkg 安装
-ssh root@<路由器IP> 'opkg install /tmp/luci-app-leigod-manager_1.0.0_all.ipk'
+ssh root@<路由器IP> 'opkg install /tmp/luci-app-leigod-manager_1.0.1_all.ipk'
 ```
 
 > 💡 **提示**：安装成功后刷新浏览器即可在 LuCI 菜单「**服务**」->「**雷神加速器**」中访问管理面板。会话不会中断，无需重新输入登录密码。
@@ -94,8 +94,8 @@ python3 build_apk.py
 ```
 
 构建生成的安装包将存放在 `dist/` 目录下：
-- `dist/luci-app-leigod-manager_1.0.0_all.ipk`
-- `dist/luci-app-leigod-manager_1.0.0_noarch.apk`
+- `dist/luci-app-leigod-manager_1.0.1_all.ipk`
+- `dist/luci-app-leigod-manager_1.0.1_noarch.apk`
 
 ---
 
